@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """IngeTrazo — NEN 6068 Brandoverslag extension.
 
-Stage 1: read-only inventory of BIM-tagged groups, loose BIM faces and
-Windowizer opening metadata. No NEN calculation is performed here.
+Stage 1: read-only inventory. Stage 2: explicit role and opening association
+using stable group identities. No NEN calculation is performed here.
 """
 from __future__ import annotations
 
@@ -13,6 +13,8 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHeaderView,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -302,7 +304,7 @@ def inspect_scene(scene):
 
 
 class BrandoverslagPanel(QWidget):
-    """Read-only starting point for the NEN 6068 model workflow."""
+    """Inventory and explicit model-role association for the NEN 6068 workflow."""
 
     def __init__(self, app) -> None:
         super().__init__()
@@ -342,6 +344,14 @@ class BrandoverslagPanel(QWidget):
             self._selection_combos[key] = combo
             selection_form.addRow(label, combo)
         layout.addLayout(selection_form)
+        self.opening_lists = {}
+        for key, label in (("source_openings", tr("Openingen brongevel")),
+                           ("receiving_openings", tr("Openingen ontvangende gevel"))):
+            opening_list = QListWidget()
+            opening_list.setMaximumHeight(105)
+            opening_list.itemChanged.connect(self._save_opening_selection)
+            self.opening_lists[key] = opening_list
+            selection_form.addRow(label, opening_list)
         self.selection_status = QLabel()
         self.selection_status.setWordWrap(True)
         layout.addWidget(self.selection_status)
@@ -366,11 +376,11 @@ class BrandoverslagPanel(QWidget):
         layout.addWidget(self.refresh_button)
 
         self.scope = QLabel(
-            tr("Deze fase leest alleen bestaande modelgegevens. "
-               "Gebouwen en brandcompartimenten worden niet automatisch afgeleid "
-               "uit IFC-tags. Controleer daarom de objectclassificaties en "
-               "openingsgegevens voordat een berekening wordt opgezet. "
-               "Er worden nog geen NEN 6068-resultaten berekend.")
+            tr("De geometrie wordt niet gewijzigd. Gebouwen, gevels en het "
+               "brandcompartiment worden handmatig aan een rol gekoppeld. "
+               "Vink per gevel de bijbehorende Windowizer-openingen aan. "
+               "IFC-tags zijn alleen herkenningshulp; er worden nog geen "
+               "NEN 6068-resultaten berekend.")
         )
         self.scope.setWordWrap(True)
         self.scope.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -382,7 +392,8 @@ class BrandoverslagPanel(QWidget):
         """Rebuild role selectors while retaining saved stable group IDs."""
         state = self.app.document_data({}) or {}
         selected = state.get("selection", {})
-        choices = group_selection_choices(getattr(self.app.scene, "groups", None))
+        groups = list(_walk_groups(getattr(self.app.scene, "groups", None)))
+        choices = group_selection_choices(groups)
         available = {uid for _label, uid in choices}
         for key, combo in self._selection_combos.items():
             combo.blockSignals(True)
@@ -394,22 +405,59 @@ class BrandoverslagPanel(QWidget):
             index = combo.findData(current_uid) if current_uid in available else 0
             combo.setCurrentIndex(max(index, 0))
             combo.blockSignals(False)
+        opening_choices = []
+        for group in groups:
+            if _windowizer_data(group) is None or not getattr(group, "uid", None):
+                continue
+            name = getattr(group, "name", "") or tr("Naamloos raam")
+            opening_choices.append((f"{name} · {group.uid[:6]}", group.uid))
+        for key, opening_list in self.opening_lists.items():
+            opening_list.blockSignals(True)
+            opening_list.clear()
+            checked = set(selected.get(key, []))
+            for label, uid in opening_choices:
+                item = QListWidgetItem(label)
+                item.setData(Qt.UserRole, uid)
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Checked if uid in checked else Qt.Unchecked)
+                opening_list.addItem(item)
+            opening_list.blockSignals(False)
         chosen = sum(1 for key in self._selection_combos
                      if selected.get(key) in available)
+        opening_count = sum(
+            1 for key in self.opening_lists
+            for uid in selected.get(key, []) if uid in {u for _label, u in opening_choices}
+        )
         self.selection_status.setText(
-            tr("{chosen} van de {total} modelonderdelen expliciet gekoppeld. "
-               "Controleer de gekozen objecten; IFC-classificaties worden "
-               "niet als automatische roltoewijzing gebruikt.",
-               chosen=chosen, total=len(self._selection_combos))
+            tr("{chosen} van de {total} rollen gekoppeld; {openings} openingen "
+               "aan gevels toegewezen. Controleer de objectkeuze: IFC-tags "
+               "worden niet als automatische roltoewijzing gebruikt.",
+               chosen=chosen, total=len(self._selection_combos),
+               openings=opening_count)
         )
 
     def _save_selection(self, _index=None) -> None:
         """Persist role assignments by stable group UID, never by row/name."""
         state = self.app.document_data({}) or {}
-        state["selection"] = {
+        selection = state.get("selection", {})
+        selection.update({
             key: combo.currentData()
             for key, combo in self._selection_combos.items()
-        }
+        })
+        state["selection"] = selection
+        self.app.set_document_data(state)
+
+    def _save_opening_selection(self, _item=None) -> None:
+        """Persist checked Windowizer opening UIDs for each selected facade."""
+        state = self.app.document_data({}) or {}
+        selection = state.get("selection", {})
+        for key, opening_list in self.opening_lists.items():
+            selection[key] = [
+                opening_list.item(i).data(Qt.UserRole)
+                for i in range(opening_list.count())
+                if opening_list.item(i).checkState() == Qt.Checked
+            ]
+        state["selection"] = selection
         self.app.set_document_data(state)
 
     def refresh(self) -> None:
