@@ -192,12 +192,30 @@ def inspect_scene(scene):
                          for placed, _matrix in iter_placements(group))
         note = ""
         if data is not None:
-            size = _outline_size(data["outline"])
-            if size is not None:
-                note = tr("Windowizer-contour: {width:.3f} × {height:.3f} m",
-                          width=size[0], height=size[1])
+            outline = windowizer_world_outline(group, data)
+            if outline is not None:
+                xs = [point.x() for point in outline]
+                zs = [point.z() for point in outline]
+                width = max(xs) - min(xs)
+                height = max(zs) - min(zs)
+                normal = _newell_normal(outline)
+                if normal is not None:
+                    note = tr("Wereldcontour: {width:.3f} × {height:.3f} m; "
+                              "normaal ({nx:.2f}, {ny:.2f}, {nz:.2f})",
+                              width=width, height=height,
+                              nx=normal.x(), ny=normal.y(), nz=normal.z())
+                else:
+                    note = tr("Windowizer-contour aanwezig; vlakrichting niet bepaald")
             else:
-                note = tr("Windowizer-contour aanwezig; afmetingen niet leesbaar")
+                note = tr("Windowizer-contour aanwezig; plaatsing niet leesbaar")
+        elif tag.get("class") == "IfcWall":
+            faces = group_world_faces(group)
+            vertical = sum(1 for face in faces
+                           if face["normal"] is not None
+                           and abs(face["normal"].z()) < 0.2)
+            note = tr("Geometrie: {faces} vlakken, {vertical} verticale vlakken; "
+                      "gevelidentificatie nog niet bevestigd",
+                      faces=len(faces), vertical=vertical)
         rows.append({
             "name": getattr(group, "name", ""),
             "ifc": tag.get("class", tr("Geen IFC-classificatie")),
