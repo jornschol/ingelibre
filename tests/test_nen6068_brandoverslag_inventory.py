@@ -143,3 +143,26 @@ def test_opening_dimensions_are_independent_of_world_orientation():
     width, height = _outline_dimensions(world)
     assert abs(width - 1.2) < 1e-5
     assert abs(height - 1.0) < 1e-5
+
+
+
+def test_group_role_choices_use_stable_uids_and_resolve_nested_groups():
+    from plugins.nen6068_brandoverslag import (
+        find_group_by_uid,
+        group_selection_choices,
+    )
+
+    building = Group(name="Brongebouw")
+    facade = Group(name="Brongevel")
+    facade.ifc = {"class": "IfcWall", "name": "Brongevel"}
+    building.adopt([facade])
+
+    choices = group_selection_choices([building])
+    choice_ids = {uid for _label, uid in choices}
+
+    assert building.uid in choice_ids
+    assert facade.uid in choice_ids
+    assert any("IfcWall" in label for label, uid in choices
+               if uid == facade.uid)
+    assert find_group_by_uid([building], facade.uid) is facade
+    assert find_group_by_uid([building], "not-a-real-uid") is None
