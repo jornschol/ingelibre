@@ -57,6 +57,99 @@ def _outline_size(outline):
         return None
 
 
+def _world_points(points, matrix):
+    """Map local QVector3D points to world coordinates without mutating them."""
+    if matrix is None:
+        return [type(p)(p) for p in points]
+    return [matrix.map(p) for p in points]
+
+
+def _newell_normal(points):
+    """Return a unit normal from world-space polygon points; None if degenerate."""
+    from PySide6.QtGui import QVector3D
+
+    n = QVector3D()
+    for i, point in enumerate(points):
+        nxt = points[(i + 1) % len(points)]
+        n += QVector3D(
+            (point.y() - nxt.y()) * (point.z() + nxt.z()),
+            (point.z() - nxt.z()) * (point.x() + nxt.x()),
+            (point.x() - nxt.x()) * (point.y() + nxt.y()),
+        )
+    length = n.length()
+    return n / length if length > 1e-9 else None
+
+
+def group_world_faces(group):
+    """Extract world-space face geometry from a group tree, preserving holes.
+
+    This is a read-only geometric representation. It deliberately does not
+    infer whether a face is a facade or whether a hole is a fire-relevant
+    opening; those remain explicit modelling/assessment decisions.
+    """
+    from core.group import iter_placements
+
+    result = []
+    for placed, matrix in iter_placements(group):
+        for index, face in enumerate(getattr(placed.mesh, "faces", ())):
+            outer = _world_points([v.position for v in face.loop], matrix)
+            holes = [
+                _world_points([v.position for v in loop], matrix)
+                for loop in face.hole_loops
+            ]
+            result.append({
+                "group": getattr(placed, "name", ""),
+                "face_index": index,
+                "vertices": outer,
+                "holes": holes,
+                "normal": _newell_normal(outer),
+                "area": face.area(),
+                "attrs": dict(getattr(face, "attrs", None) or {}),
+            })
+    return result
+
+
+def windowizer_world_outline(group, data=None):
+    """Return a Windowizer opening contour in world coordinates.
+
+    Windowizer stores the contour in local X/Z coordinates and its placement
+    on the child parts. The child's composed placement is authoritative after
+    the window or a containing component has been moved or rotated.
+    """
+    data = data if data is not None else _windowizer_data(group)
+    if data is None:
+        return None
+
+    from core.group import iter_placements
+    from PySide6.QtGui import QMatrix4x4, QVector3D
+
+    matrix = None
+    placements = iter_placements(group)
+    next(placements, None)  # container placement
+    for _part, candidate in placements:
+        matrix = candidate
+        break
+
+    if matrix is None:
+        values = data.get("pose")
+        if isinstance(values, list) and len(values) == 16:
+            rows = [values[col * 4 + row]
+                    for row in range(4) for col in range(4)]
+            matrix = QMatrix4x4(*rows)
+            parent = getattr(group, "xform", None)
+            if parent is not None:
+                matrix = parent * matrix
+
+    try:
+        local = [QVector3D(float(p[0]), float(p[1]), float(p[2]))
+                 for p in data["outline"]]
+    except (TypeError, ValueError, IndexError, KeyError):
+        return None
+    if len(local) < 3:
+        return None
+    return _world_points(local, matrix)
+
+
 def inspect_scene(scene):
     """Build a lightweight, read-only inventory; do not copy or mutate meshes."""
     rows = []
