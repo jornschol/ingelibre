@@ -9,6 +9,8 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
+    QFormLayout,
     QHeaderView,
     QLabel,
     QPushButton,
@@ -29,6 +31,30 @@ def _walk_groups(groups):
     for group in groups or ():
         yield group
         yield from _walk_groups(getattr(group, "children", None) or ())
+
+
+def find_group_by_uid(groups, uid):
+    """Resolve a saved group identity against the current document tree."""
+    if not uid:
+        return None
+    return next((group for group in _walk_groups(groups)
+                 if getattr(group, "uid", None) == uid), None)
+
+
+def group_selection_choices(groups):
+    """Return explicit, stable-ID choices; IFC tags are descriptive only."""
+    choices = []
+    for group in _walk_groups(groups):
+        uid = getattr(group, "uid", None)
+        if not uid:
+            continue
+        ifc_class = ((getattr(group, "ifc", None) or {}).get("class") or "")
+        label = getattr(group, "name", "") or tr("Naamloze groep")
+        if ifc_class:
+            label += f" [{ifc_class}]"
+        label += f" · {uid[:6]}"
+        choices.append((label, uid))
+    return choices
 
 
 def _windowizer_data(group):
@@ -295,6 +321,31 @@ class BrandoverslagPanel(QWidget):
         self.model_summary.setWordWrap(True)
         layout.addWidget(self.model_summary)
 
+        # Explicit object association. IFC tags help identify candidates but
+        # never decide which object fulfils a NEN 6068 role.
+        selection_heading = QLabel(tr("Modelonderdelen voor de berekening"))
+        selection_heading.setStyleSheet("font-weight: 600;")
+        layout.addWidget(selection_heading)
+        selection_form = QFormLayout()
+        self._selection_combos = {}
+        selection_roles = (
+            ("source_building", tr("Brongebouw")),
+            ("receiving_building", tr("Ontvangend gebouw")),
+            ("source_facade", tr("Brongevel")),
+            ("receiving_facade", tr("Ontvangende gevel")),
+            ("fire_compartment", tr("Brandcompartiment")),
+        )
+        for key, label in selection_roles:
+            combo = QComboBox()
+            combo.addItem(tr("— niet geselecteerd —"), None)
+            combo.currentIndexChanged.connect(self._save_selection)
+            self._selection_combos[key] = combo
+            selection_form.addRow(label, combo)
+        layout.addLayout(selection_form)
+        self.selection_status = QLabel()
+        self.selection_status.setWordWrap(True)
+        layout.addWidget(self.selection_status)
+
         self.inventory = QTableWidget(0, 5)
         self.inventory.setHorizontalHeaderLabels([
             tr("Naam"), tr("IFC-klasse"), tr("Type"), tr("Vlakken"), tr("Openingsgegevens")
@@ -327,10 +378,45 @@ class BrandoverslagPanel(QWidget):
 
         self.refresh()
 
+    def _refresh_selection_choices(self) -> None:
+        """Rebuild role selectors while retaining saved stable group IDs."""
+        state = self.app.document_data({}) or {}
+        selected = state.get("selection", {})
+        choices = group_selection_choices(getattr(self.app.scene, "groups", None))
+        available = {uid for _label, uid in choices}
+        for key, combo in self._selection_combos.items():
+            combo.blockSignals(True)
+            current_uid = selected.get(key)
+            combo.clear()
+            combo.addItem(tr("— niet geselecteerd —"), None)
+            for label, uid in choices:
+                combo.addItem(label, uid)
+            index = combo.findData(current_uid) if current_uid in available else 0
+            combo.setCurrentIndex(max(index, 0))
+            combo.blockSignals(False)
+        chosen = sum(1 for key in self._selection_combos
+                     if selected.get(key) in available)
+        self.selection_status.setText(
+            tr("{chosen} van de {total} modelonderdelen expliciet gekoppeld. "
+               "Controleer de gekozen objecten; IFC-classificaties worden "
+               "niet als automatische roltoewijzing gebruikt.",
+               chosen=chosen, total=len(self._selection_combos))
+        )
+
+    def _save_selection(self, _index=None) -> None:
+        """Persist role assignments by stable group UID, never by row/name."""
+        state = self.app.document_data({}) or {}
+        state["selection"] = {
+            key: combo.currentData()
+            for key, combo in self._selection_combos.items()
+        }
+        self.app.set_document_data(state)
+
     def refresh(self) -> None:
-        """Refresh the read-only model inventory."""
+        """Refresh the read-only inventory and explicit object selectors."""
         try:
             inventory = inspect_scene(self.app.scene)
+            self._refresh_selection_choices()
             self.status.setText(tr("Modelkoppeling actief."))
             self.model_summary.setText(
                 tr("Groepen: {groups} · BIM-geclassificeerde groepen: {tagged} · "
