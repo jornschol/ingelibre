@@ -167,6 +167,28 @@ def windowizer_world_outline(group, data=None):
     return _world_points(local, matrix)
 
 
+def _outline_dimensions(points):
+    """Measure opening width/height in its own plane, not world X/Z."""
+    from PySide6.QtGui import QVector3D
+
+    if len(points) < 3:
+        return None
+    normal = _newell_normal(points)
+    if normal is None:
+        return None
+    x_axis = points[1] - points[0]
+    if x_axis.length() < 1e-9:
+        return None
+    x_axis.normalize()
+    z_axis = QVector3D.crossProduct(normal, x_axis)
+    if z_axis.length() < 1e-9:
+        return None
+    z_axis.normalize()
+    xs = [QVector3D.dotProduct(point, x_axis) for point in points]
+    zs = [QVector3D.dotProduct(point, z_axis) for point in points]
+    return max(xs) - min(xs), max(zs) - min(zs)
+
+
 def inspect_scene(scene):
     """Build a lightweight, read-only inventory; do not copy or mutate meshes."""
     rows = []
@@ -194,12 +216,10 @@ def inspect_scene(scene):
         if data is not None:
             outline = windowizer_world_outline(group, data)
             if outline is not None:
-                xs = [point.x() for point in outline]
-                zs = [point.z() for point in outline]
-                width = max(xs) - min(xs)
-                height = max(zs) - min(zs)
+                dimensions = _outline_dimensions(outline)
                 normal = _newell_normal(outline)
-                if normal is not None:
+                if normal is not None and dimensions is not None:
+                    width, height = dimensions
                     note = tr("Wereldcontour: {width:.3f} × {height:.3f} m; "
                               "normaal ({nx:.2f}, {ny:.2f}, {nz:.2f})",
                               width=width, height=height,
