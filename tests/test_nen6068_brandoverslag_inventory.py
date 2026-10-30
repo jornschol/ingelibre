@@ -55,9 +55,9 @@ def test_inventory_finds_nested_bim_groups_and_windowizer_metadata():
 
 def test_inventory_reports_loose_bim_faces_without_mutating_scene():
     scene = Scene()
-    face = _triangle().faces[0]
+    source_face = _triangle().faces[0]
+    face = scene.loose_mesh.add_face(source_face.vertices)
     face.attrs["ifc"] = {"id": 7, "class": "IfcWall", "name": "Gevel"}
-    scene.loose_mesh.add_face(face.vertices)
 
     before = scene.version
     result = inspect_scene(scene)
