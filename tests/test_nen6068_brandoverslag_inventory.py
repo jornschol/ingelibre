@@ -166,3 +166,21 @@ def test_group_role_choices_use_stable_uids_and_resolve_nested_groups():
                if uid == facade.uid)
     assert find_group_by_uid([building], facade.uid) is facade
     assert find_group_by_uid([building], "not-a-real-uid") is None
+
+
+
+def test_opening_selection_choices_only_include_windowizer_groups():
+    from plugins.nen6068_brandoverslag import opening_selection_choices
+
+    building = Group(name="Building")
+    opening = Group(name="Window-01")
+    opening.ext = {"windowizer": {"outline": [
+        [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 1.0]
+    ]}}
+    ordinary_part = Group(name="Frame")
+    building.adopt([opening, ordinary_part])
+
+    choices = opening_selection_choices([building])
+
+    assert [uid for _label, uid in choices] == [opening.uid]
+    assert "Window-01" in choices[0][0]
