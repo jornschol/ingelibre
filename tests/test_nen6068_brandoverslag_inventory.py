@@ -124,3 +124,22 @@ def test_windowizer_world_outline_uses_composed_child_and_parent_pose():
     assert outline is not None
     assert (outline[0] - QVector3D(12.0, 3.0, 4.0)).length() < 1e-6
     assert (outline[2] - QVector3D(13.2, 3.0, 5.0)).length() < 1e-6
+
+
+
+def test_opening_dimensions_are_independent_of_world_orientation():
+    from PySide6.QtGui import QMatrix4x4, QVector3D
+    from plugins.nen6068_brandoverslag import _outline_dimensions
+
+    local = [
+        QVector3D(0.0, 0.0, 0.0), QVector3D(1.2, 0.0, 0.0),
+        QVector3D(1.2, 0.0, 1.0), QVector3D(0.0, 0.0, 1.0),
+    ]
+    pose = QMatrix4x4()
+    pose.rotate(90.0, QVector3D(0.0, 0.0, 1.0))
+    pose.translate(QVector3D(2.0, 3.0, 0.0))
+    world = [pose.map(point) for point in local]
+
+    width, height = _outline_dimensions(world)
+    assert abs(width - 1.2) < 1e-5
+    assert abs(height - 1.0) < 1e-5
