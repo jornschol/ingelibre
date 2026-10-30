@@ -80,6 +80,23 @@ def _newell_normal(points):
     return n / length if length > 1e-9 else None
 
 
+def _polygon_area(points):
+    """Area of a planar world-space polygon, independent of placement scale."""
+    if len(points) < 3:
+        return 0.0
+    # The length of the Newell vector is twice the polygon area.
+    from PySide6.QtGui import QVector3D
+    n = QVector3D()
+    for i, point in enumerate(points):
+        nxt = points[(i + 1) % len(points)]
+        n += QVector3D(
+            (point.y() - nxt.y()) * (point.z() + nxt.z()),
+            (point.z() - nxt.z()) * (point.x() + nxt.x()),
+            (point.x() - nxt.x()) * (point.y() + nxt.y()),
+        )
+    return 0.5 * n.length()
+
+
 def group_world_faces(group):
     """Extract world-space face geometry from a group tree, preserving holes.
 
@@ -103,7 +120,7 @@ def group_world_faces(group):
                 "vertices": outer,
                 "holes": holes,
                 "normal": _newell_normal(outer),
-                "area": face.area(),
+                "area": _polygon_area(outer),
                 "attrs": dict(getattr(face, "attrs", None) or {}),
             })
     return result
