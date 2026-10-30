@@ -59,6 +59,17 @@ def group_selection_choices(groups):
     return choices
 
 
+def opening_selection_choices(groups):
+    """Return Windowizer openings as explicit, stable-ID facade candidates."""
+    choices = []
+    for group in _walk_groups(groups):
+        if _windowizer_data(group) is None or not getattr(group, "uid", None):
+            continue
+        name = getattr(group, "name", "") or tr("Naamloos raam")
+        choices.append((f"{name} · {group.uid[:6]}", group.uid))
+    return choices
+
+
 def _windowizer_data(group):
     """Return the stored Windowizer outline record, if this is such a window."""
     ext = getattr(group, "ext", None) or {}
@@ -405,21 +416,17 @@ class BrandoverslagPanel(QWidget):
             index = combo.findData(current_uid) if current_uid in available else 0
             combo.setCurrentIndex(max(index, 0))
             combo.blockSignals(False)
-        opening_choices = []
-        for group in groups:
-            if _windowizer_data(group) is None or not getattr(group, "uid", None):
-                continue
-            name = getattr(group, "name", "") or tr("Naamloos raam")
-            opening_choices.append((f"{name} · {group.uid[:6]}", group.uid))
+        opening_choices = opening_selection_choices(groups)
         for key, opening_list in self.opening_lists.items():
             opening_list.blockSignals(True)
             opening_list.clear()
             checked = set(selected.get(key, []))
             for label, uid in opening_choices:
                 item = QListWidgetItem(label)
-                item.setData(Qt.UserRole, uid)
-                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-                item.setCheckState(Qt.Checked if uid in checked else Qt.Unchecked)
+                item.setData(Qt.ItemDataRole.UserRole, uid)
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(Qt.CheckState.Checked if uid in checked
+                                   else Qt.CheckState.Unchecked)
                 opening_list.addItem(item)
             opening_list.blockSignals(False)
         chosen = sum(1 for key in self._selection_combos
@@ -453,9 +460,9 @@ class BrandoverslagPanel(QWidget):
         selection = state.get("selection", {})
         for key, opening_list in self.opening_lists.items():
             selection[key] = [
-                opening_list.item(i).data(Qt.UserRole)
+                opening_list.item(i).data(Qt.ItemDataRole.UserRole)
                 for i in range(opening_list.count())
-                if opening_list.item(i).checkState() == Qt.Checked
+                if opening_list.item(i).checkState() == Qt.CheckState.Checked
             ]
         state["selection"] = selection
         self.app.set_document_data(state)
