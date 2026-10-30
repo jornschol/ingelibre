@@ -62,6 +62,7 @@ def inspect_scene(scene):
     rows = []
     tagged_groups = 0
     windowizer_count = 0
+    from core.group import iter_placements
 
     for group in _walk_groups(getattr(scene, "groups", None)):
         tag = getattr(group, "ifc", None) or {}
@@ -76,9 +77,7 @@ def inspect_scene(scene):
         if not tag and data is None:
             continue
 
-        parts = [group]
         # Count actual faces in this group tree without flattening/copying it.
-        from core.group import iter_placements
         face_count = sum(len(placed.mesh.faces)
                          for placed, _matrix in iter_placements(group))
         note = ""
