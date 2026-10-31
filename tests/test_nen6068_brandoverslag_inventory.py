@@ -184,3 +184,70 @@ def test_opening_selection_choices_only_include_windowizer_groups():
 
     assert [uid for _label, uid in choices] == [opening.uid]
     assert "Window-01" in choices[0][0]
+
+
+def test_selection_validation_accepts_explicit_roles_and_valid_openings():
+    from plugins.nen6068_brandoverslag import validate_selection
+
+    scene = Scene()
+    source = Group(name="Source")
+    source_facade = Group(name="Source facade")
+    compartment = Group(name="Compartment")
+    source.adopt([source_facade, compartment])
+    receiving = Group(name="Receiving")
+    receiving_facade = Group(name="Receiving facade")
+    receiving.adopt([receiving_facade])
+
+    source_window = Group(name="Source window")
+    receiving_window = Group(name="Receiving window")
+    outline = [[0.0, 0.0, 0.0], [1.2, 0.0, 0.0],
+               [1.2, 0.0, 1.0], [0.0, 0.0, 1.0]]
+    source_window.ext = {"windowizer": {"outline": outline}}
+    receiving_window.ext = {"windowizer": {"outline": outline}}
+    scene.groups.extend([source, receiving, source_window, receiving_window])
+
+    selection = {
+        "source_building": source.uid,
+        "receiving_building": receiving.uid,
+        "source_facade": source_facade.uid,
+        "receiving_facade": receiving_facade.uid,
+        "fire_compartment": compartment.uid,
+        "source_openings": [source_window.uid],
+        "receiving_openings": [receiving_window.uid],
+    }
+    report = validate_selection(scene, selection)
+
+    assert report["valid"] is True
+    assert report["errors"] == []
+    assert any("geometrisch bewezen" in warning
+               for warning in report["warnings"])
+
+
+def test_selection_validation_rejects_missing_roles_and_shared_openings():
+    from plugins.nen6068_brandoverslag import validate_selection
+
+    scene = Scene()
+    building = Group(name="Building")
+    facade = Group(name="Facade")
+    compartment = Group(name="Compartment")
+    building.adopt([facade, compartment])
+    window = Group(name="Window")
+    window.ext = {"windowizer": {"outline": [
+        [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 1.0]
+    ]}}
+    scene.groups.extend([building, window])
+    selection = {
+        "source_building": building.uid,
+        "receiving_building": building.uid,
+        "source_facade": facade.uid,
+        "receiving_facade": "missing-facade",
+        "fire_compartment": compartment.uid,
+        "source_openings": [window.uid],
+        "receiving_openings": [window.uid],
+    }
+
+    report = validate_selection(scene, selection)
+    assert report["valid"] is False
+    assert any("hetzelfde object" in error for error in report["errors"])
+    assert any("bestaat niet" in error for error in report["errors"])
+    assert any("zowel aan de bron" in error for error in report["errors"])
