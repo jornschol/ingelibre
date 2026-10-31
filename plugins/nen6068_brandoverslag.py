@@ -228,6 +228,105 @@ def _outline_dimensions(points):
     return max(xs) - min(xs), max(zs) - min(zs)
 
 
+
+def validate_selection(scene, selection):
+    """Validate saved role links and opening geometry without guessing semantics.
+
+    Errors identify missing or contradictory assignments. Warnings identify
+    geometry that cannot yet be checked against a facade/compartment boundary.
+    """
+    groups = list(_walk_groups(getattr(scene, "groups", None)))
+    by_uid = {getattr(group, "uid", None): group for group in groups
+              if getattr(group, "uid", None)}
+    errors, warnings = [], []
+
+    role_labels = {
+        "source_building": "brongebouw",
+        "receiving_building": "ontvangend gebouw",
+        "source_facade": "brongevel",
+        "receiving_facade": "ontvangende gevel",
+        "fire_compartment": "brandcompartiment",
+    }
+    resolved = {}
+    for key, label in role_labels.items():
+        uid = selection.get(key)
+        group = by_uid.get(uid) if uid else None
+        if group is None:
+            errors.append(f"Geen geldig {label} geselecteerd.")
+        else:
+            resolved[key] = group
+
+    source_uid = selection.get("source_building")
+    receiving_uid = selection.get("receiving_building")
+    if source_uid and source_uid == receiving_uid and source_uid in by_uid:
+        errors.append("Brongebouw en ontvangend gebouw zijn hetzelfde object.")
+
+    for facade_key, building_key, label in (
+        ("source_facade", "source_building", "brongevel"),
+        ("receiving_facade", "receiving_building", "ontvangende gevel"),
+    ):
+        facade = resolved.get(facade_key)
+        building = resolved.get(building_key)
+        if facade is not None and building is not None:
+            # Group hierarchy is only a meaningful ownership signal when the
+            # facade is actually nested below the selected building.
+            ancestors = set()
+            for candidate in groups:
+                if facade in (getattr(candidate, "children", None) or ()):
+                    ancestors.add(getattr(candidate, "uid", None))
+            if ancestors and building.uid not in ancestors:
+                warnings.append(
+                    f"De geselecteerde {label} is niet direct onder het "
+                    "gekozen gebouw gekoppeld; controleer de modelstructuur."
+                )
+            elif not ancestors and facade is not building:
+                warnings.append(
+                    f"De relatie tussen {label} en het gekozen gebouw kan "
+                    "niet uit de groepsstructuur worden bevestigd."
+                )
+
+    opening_sets = {}
+    for key, label in (("source_openings", "brongevel"),
+                       ("receiving_openings", "ontvangende gevel")):
+        uids = selection.get(key, []) or []
+        if not isinstance(uids, list):
+            errors.append(f"De openingstoewijzing aan de {label} is ongeldig.")
+            opening_sets[key] = set()
+            continue
+        if len(uids) != len(set(uids)):
+            errors.append(f"Een opening is dubbel toegewezen aan de {label}.")
+        opening_sets[key] = set(uids)
+        for uid in uids:
+            group = by_uid.get(uid)
+            if group is None:
+                errors.append(f"Een geselecteerde opening aan de {label} bestaat niet meer.")
+                continue
+            data = _windowizer_data(group)
+            if data is None:
+                errors.append(f"Een geselecteerd object aan de {label} is geen Windowizer-opening.")
+                continue
+            outline = windowizer_world_outline(group, data)
+            if outline is None:
+                errors.append(f"De geometrie van een opening aan de {label} is niet leesbaar.")
+                continue
+            if _newell_normal(outline) is None or _outline_dimensions(outline) is None:
+                errors.append(f"De contour van een opening aan de {label} is ongeldig of gedegenereerd.")
+
+    shared = opening_sets["source_openings"] & opening_sets["receiving_openings"]
+    if shared:
+        errors.append("Eén of meer openingen zijn zowel aan de bron- als ontvangende gevel toegewezen.")
+
+    if not selection.get("source_openings"):
+        warnings.append("Er zijn geen openingen aan de brongevel toegewezen.")
+    if not selection.get("receiving_openings"):
+        warnings.append("Er zijn geen openingen aan de ontvangende gevel toegewezen.")
+    warnings.append(
+        "De ligging van openingen ten opzichte van de gekozen gevelvlakken en "
+        "de begrenzing van het brandcompartiment is nog niet geometrisch bewezen."
+    )
+    return {"errors": errors, "warnings": warnings,
+            "valid": not errors, "resolved": resolved}
+
 def inspect_scene(scene):
     """Build a lightweight, read-only inventory; do not copy or mutate meshes."""
     rows = []
@@ -366,6 +465,9 @@ class BrandoverslagPanel(QWidget):
         self.selection_status = QLabel()
         self.selection_status.setWordWrap(True)
         layout.addWidget(self.selection_status)
+        self.validation_status = QLabel()
+        self.validation_status.setWordWrap(True)
+        layout.addWidget(self.validation_status)
 
         self.inventory = QTableWidget(0, 5)
         self.inventory.setHorizontalHeaderLabels([
@@ -442,6 +544,12 @@ class BrandoverslagPanel(QWidget):
                chosen=chosen, total=len(self._selection_combos),
                openings=opening_count)
         )
+        report = validate_selection(self.app.scene, selected)
+        messages = (["Fouten:"] + ["• " + item for item in report["errors"]]
+                    if report["errors"] else ["Geen ontbrekende of tegenstrijdige rolkoppelingen."])
+        if report["warnings"]:
+            messages += ["Aandachtspunten:"] + ["• " + item for item in report["warnings"]]
+        self.validation_status.setText("\\n".join(messages))
 
     def _save_selection(self, _index=None) -> None:
         """Persist role assignments by stable group UID, never by row/name."""
