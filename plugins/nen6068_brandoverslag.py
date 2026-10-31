@@ -238,6 +238,13 @@ def validate_selection(scene, selection):
     groups = list(_walk_groups(getattr(scene, "groups", None)))
     by_uid = {getattr(group, "uid", None): group for group in groups
               if getattr(group, "uid", None)}
+    parent_by_uid = {}
+    for parent in groups:
+        parent_uid = getattr(parent, "uid", None)
+        for child in getattr(parent, "children", None) or ():
+            child_uid = getattr(child, "uid", None)
+            if parent_uid and child_uid:
+                parent_by_uid[child_uid] = parent_uid
     errors, warnings = [], []
 
     role_labels = {
@@ -270,16 +277,14 @@ def validate_selection(scene, selection):
         if facade is not None and building is not None:
             # Group hierarchy is only a meaningful ownership signal when the
             # facade is actually nested below the selected building.
-            ancestors = set()
-            for candidate in groups:
-                if facade in (getattr(candidate, "children", None) or ()):
-                    ancestors.add(getattr(candidate, "uid", None))
-            if ancestors and building.uid not in ancestors:
-                warnings.append(
-                    f"De geselecteerde {label} is niet direct onder het "
-                    "gekozen gebouw gekoppeld; controleer de modelstructuur."
-                )
-            elif not ancestors and facade is not building:
+            ancestor_uid = parent_by_uid.get(facade.uid)
+            is_descendant = False
+            while ancestor_uid:
+                if ancestor_uid == building.uid:
+                    is_descendant = True
+                    break
+                ancestor_uid = parent_by_uid.get(ancestor_uid)
+            if facade.uid != building.uid and not is_descendant:
                 warnings.append(
                     f"De relatie tussen {label} en het gekozen gebouw kan "
                     "niet uit de groepsstructuur worden bevestigd."
@@ -544,7 +549,12 @@ class BrandoverslagPanel(QWidget):
                chosen=chosen, total=len(self._selection_combos),
                openings=opening_count)
         )
-        report = validate_selection(self.app.scene, selected)
+        self._update_validation(selected)
+
+    def _update_validation(self, selection=None) -> None:
+        selection = selection if selection is not None else (
+            self.app.document_data({}) or {}).get("selection", {})
+        report = validate_selection(self.app.scene, selection)
         messages = (["Fouten:"] + ["• " + item for item in report["errors"]]
                     if report["errors"] else ["Geen ontbrekende of tegenstrijdige rolkoppelingen."])
         if report["warnings"]:
@@ -561,6 +571,7 @@ class BrandoverslagPanel(QWidget):
         })
         state["selection"] = selection
         self.app.set_document_data(state)
+        self._update_validation(selection)
 
     def _save_opening_selection(self, _item=None) -> None:
         """Persist checked Windowizer opening UIDs for each selected facade."""
@@ -574,6 +585,7 @@ class BrandoverslagPanel(QWidget):
             ]
         state["selection"] = selection
         self.app.set_document_data(state)
+        self._update_validation(selection)
 
     def refresh(self) -> None:
         """Refresh the read-only inventory and explicit object selectors."""
