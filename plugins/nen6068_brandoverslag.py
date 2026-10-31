@@ -156,14 +156,14 @@ def inspect_scene(scene):
         tag = getattr(group, "ifc", None) or {}
         if tag:
             tagged_groups += 1
-        face_count = 0
-        group_openings = 0
-        for placed, _matrix in iter_placements(group):
-            face_count += len(placed.mesh.faces)
-            group_openings += sum(
-                1 for face in placed.mesh.faces
-                if (getattr(face, "attrs", None) or {}).get("mat") == OPENING_MATERIAL
-            )
+        # Count only this group's own mesh here; nested groups are visited
+        # separately by _walk_groups and must not be counted more than once.
+        own_faces = getattr(getattr(group, "mesh", None), "faces", ())
+        face_count = len(own_faces)
+        group_openings = sum(
+            1 for face in own_faces
+            if (getattr(face, "attrs", None) or {}).get("mat") == OPENING_MATERIAL
+        )
         # Avoid listing every untagged nested helper group.
         if not tag and not group_openings:
             continue
