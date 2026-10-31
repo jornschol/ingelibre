@@ -235,6 +235,8 @@ def validate_selection(scene, selection):
     Errors identify missing or contradictory assignments. Warnings identify
     geometry that cannot yet be checked against a facade/compartment boundary.
     """
+    if not isinstance(selection, dict):
+        selection = {}
     groups = list(_walk_groups(getattr(scene, "groups", None)))
     by_uid = {getattr(group, "uid", None): group for group in groups
               if getattr(group, "uid", None)}
@@ -290,6 +292,20 @@ def validate_selection(scene, selection):
                     "niet uit de groepsstructuur worden bevestigd."
                 )
 
+    compartment = resolved.get("fire_compartment")
+    source_building = resolved.get("source_building")
+    if compartment is not None and source_building is not None:
+        ancestor_uid = parent_by_uid.get(compartment.uid)
+        belongs_to_source = compartment.uid == source_building.uid
+        while ancestor_uid and not belongs_to_source:
+            belongs_to_source = ancestor_uid == source_building.uid
+            ancestor_uid = parent_by_uid.get(ancestor_uid)
+        if not belongs_to_source:
+            warnings.append(
+                "De relatie tussen het brandcompartiment en het brongebouw "
+                "kan niet uit de groepsstructuur worden bevestigd."
+            )
+
     opening_sets = {}
     for key, label in (("source_openings", "brongevel"),
                        ("receiving_openings", "ontvangende gevel")):
@@ -298,9 +314,15 @@ def validate_selection(scene, selection):
             errors.append(f"De openingstoewijzing aan de {label} is ongeldig.")
             opening_sets[key] = set()
             continue
-        if len(uids) != len(set(uids)):
+        try:
+            unique_uids = set(uids)
+        except TypeError:
+            errors.append(f"De openingstoewijzing aan de {label} bevat ongeldige ID's.")
+            opening_sets[key] = set()
+            continue
+        if len(uids) != len(unique_uids):
             errors.append(f"Een opening is dubbel toegewezen aan de {label}.")
-        opening_sets[key] = set(uids)
+        opening_sets[key] = unique_uids
         for uid in uids:
             group = by_uid.get(uid)
             if group is None:
