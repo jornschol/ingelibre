@@ -251,3 +251,76 @@ def test_selection_validation_rejects_missing_roles_and_shared_openings():
     assert any("hetzelfde object" in error for error in report["errors"])
     assert any("bestaat niet" in error for error in report["errors"])
     assert any("zowel aan de bron" in error for error in report["errors"])
+
+
+def test_loose_ifc_wall_facades_have_stable_references_and_resolve():
+    from plugins.nen6068_brandoverslag import (
+        facade_selection_choices,
+        resolve_facade_selection,
+    )
+
+    scene = Scene()
+    source = scene.loose_mesh.add_face(_triangle().faces[0].vertices)
+    source.attrs["ifc"] = {"id": 41, "class": "IfcWall", "name": "Westgevel"}
+    # A second face belonging to the same IFC object must remain one choice.
+    second = scene.loose_mesh.add_face(_triangle().faces[0].vertices)
+    second.attrs["ifc"] = {"id": 41, "class": "IfcWall", "name": "Westgevel"}
+
+    choices = facade_selection_choices(scene)
+    assert len(choices) == 1
+    assert choices[0][1] == "faces:41"
+    resolved = resolve_facade_selection(scene, "faces:41")
+    assert resolved is not None
+    assert resolved["kind"] == "faces"
+    assert len(resolved["faces"]) == 2
+    assert resolve_facade_selection(scene, "faces:999") is None
+
+
+def test_windowizer_opening_host_ifc_id_is_checked_against_selected_loose_facade():
+    from plugins.nen6068_brandoverslag import validate_selection
+
+    scene = Scene()
+    source = Group(name="Source")
+    compartment = Group(name="Compartment")
+    source.adopt([compartment])
+    receiving = Group(name="Receiving")
+    scene.groups.extend([source, receiving])
+
+    wall = scene.loose_mesh.add_face(_triangle().faces[0].vertices)
+    wall.attrs["ifc"] = {"id": 41, "class": "IfcWall", "name": "Westgevel"}
+    receiving_wall = scene.loose_mesh.add_face(_triangle().faces[0].vertices)
+    receiving_wall.attrs["ifc"] = {"id": 42, "class": "IfcWall", "name": "Oostgevel"}
+
+    source_window = Group(name="Source window")
+    receiving_window = Group(name="Receiving window")
+    outline = [[0.0, 0.0, 0.0], [1.2, 0.0, 0.0],
+               [1.2, 0.0, 1.0], [0.0, 0.0, 1.0]]
+    source_window.ext = {"windowizer": {"outline": outline}}
+    receiving_window.ext = {"windowizer": {"outline": outline}}
+    scene.groups.extend([source_window, receiving_window])
+    scene.plugin_data["windowizer"] = {"openings": {
+        source_window.uid: {"host": {"attrs": {
+            "ifc": {"id": 41, "class": "IfcWall", "name": "Westgevel"}
+        }}},
+        receiving_window.uid: {"host": {"attrs": {
+            "ifc": {"id": 42, "class": "IfcWall", "name": "Oostgevel"}
+        }}},
+    }}
+
+    selection = {
+        "source_building": source.uid,
+        "receiving_building": receiving.uid,
+        "source_facade": "faces:41",
+        "receiving_facade": "faces:42",
+        "fire_compartment": compartment.uid,
+        "source_openings": [source_window.uid],
+        "receiving_openings": [receiving_window.uid],
+    }
+    report = validate_selection(scene, selection)
+    assert report["valid"] is True
+    assert not any("komt niet overeen" in error for error in report["errors"])
+
+    selection["source_facade"] = "faces:42"
+    report = validate_selection(scene, selection)
+    assert report["valid"] is False
+    assert any("komt niet overeen" in error for error in report["errors"])
