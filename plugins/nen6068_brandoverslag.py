@@ -59,6 +59,74 @@ def group_selection_choices(groups):
     return choices
 
 
+
+def loose_facade_selection_choices(scene):
+    """Return stable references to IFC wall objects stored in the loose mesh.
+
+    BIM object IDs, not Python face identities or display names, are persisted.
+    """
+    grouped = {}
+    loose_mesh = getattr(scene, "loose_mesh", None)
+    for face in getattr(loose_mesh, "faces", ()) if loose_mesh else ():
+        tag = (getattr(face, "attrs", None) or {}).get("ifc")
+        if not isinstance(tag, dict) or tag.get("class") != "IfcWall":
+            continue
+        obj_id = tag.get("id")
+        if not isinstance(obj_id, (int, str)) or str(obj_id) == "":
+            continue
+        key = str(obj_id)
+        entry = grouped.setdefault(key, {
+            "name": tag.get("name") or tr("Naamloze IFC-wand"),
+            "class": tag.get("class") or "IfcWall",
+            "faces": 0,
+        })
+        entry["faces"] += 1
+    return [
+        (f'{item["name"]} [{item["class"]}] · {count} vlakken · IFC {obj_id}',
+         f"faces:{obj_id}")
+        for obj_id, item in sorted(grouped.items(), key=lambda pair: pair[0])
+        for count in [item["faces"]]
+    ]
+
+
+def facade_selection_choices(scene):
+    """Combine explicit group choices and stable loose IFC-wall references."""
+    groups = list(_walk_groups(getattr(scene, "groups", None)))
+    return group_selection_choices(groups) + loose_facade_selection_choices(scene)
+
+
+def resolve_facade_selection(scene, reference):
+    """Resolve a facade reference as either a group UID or loose IFC object ID."""
+    if isinstance(reference, str) and reference.startswith("faces:"):
+        obj_id = reference.split(":", 1)[1]
+        faces = []
+        loose_mesh = getattr(scene, "loose_mesh", None)
+        for face in getattr(loose_mesh, "faces", ()) if loose_mesh else ():
+            tag = (getattr(face, "attrs", None) or {}).get("ifc")
+            if (isinstance(tag, dict) and tag.get("class") == "IfcWall"
+                    and str(tag.get("id")) == obj_id):
+                faces.append(face)
+        return {"kind": "faces", "id": obj_id, "faces": faces} if faces else None
+    group = find_group_by_uid(getattr(scene, "groups", None), reference)
+    return {"kind": "group", "group": group} if group is not None else None
+
+
+def _windowizer_host_record(scene, opening_uid):
+    """Read Windowizer's saved source-face metadata for an opening UID."""
+    plugin_data = getattr(scene, "plugin_data", None) or {}
+    registry = plugin_data.get(WINDOWIZER_KEY) or {}
+    openings = registry.get("openings") or {}
+    record = openings.get(opening_uid)
+    return record if isinstance(record, dict) else None
+
+
+def _host_ifc_tag(record):
+    host = record.get("host") if isinstance(record, dict) else None
+    attrs = host.get("attrs") if isinstance(host, dict) else None
+    tag = attrs.get("ifc") if isinstance(attrs, dict) else None
+    return tag if isinstance(tag, dict) else None
+
+
 def opening_selection_choices(groups):
     """Return Windowizer openings as explicit, stable-ID facade candidates."""
     choices = []
@@ -230,11 +298,7 @@ def _outline_dimensions(points):
 
 
 def validate_selection(scene, selection):
-    """Validate saved role links and opening geometry without guessing semantics.
-
-    Errors identify missing or contradictory assignments. Warnings identify
-    geometry that cannot yet be checked against a facade/compartment boundary.
-    """
+    """Validate role links and use Windowizer's saved host tags where possible."""
     if not isinstance(selection, dict):
         selection = {}
     groups = list(_walk_groups(getattr(scene, "groups", None)))
@@ -247,13 +311,11 @@ def validate_selection(scene, selection):
             child_uid = getattr(child, "uid", None)
             if parent_uid and child_uid:
                 parent_by_uid[child_uid] = parent_uid
-    errors, warnings = [], []
 
+    errors, warnings = [], []
     role_labels = {
         "source_building": "brongebouw",
         "receiving_building": "ontvangend gebouw",
-        "source_facade": "brongevel",
-        "receiving_facade": "ontvangende gevel",
         "fire_compartment": "brandcompartiment",
     }
     resolved = {}
@@ -265,6 +327,17 @@ def validate_selection(scene, selection):
         else:
             resolved[key] = group
 
+    facade_refs = {}
+    for key, label in (("source_facade", "brongevel"),
+                       ("receiving_facade", "ontvangende gevel")):
+        reference = selection.get(key)
+        facade = resolve_facade_selection(scene, reference) if reference else None
+        if facade is None:
+            errors.append(f"Geen geldige {label} geselecteerd.")
+        else:
+            facade_refs[key] = facade
+            resolved[key] = facade
+
     source_uid = selection.get("source_building")
     receiving_uid = selection.get("receiving_building")
     if source_uid and source_uid == receiving_uid and source_uid in by_uid:
@@ -274,22 +347,25 @@ def validate_selection(scene, selection):
         ("source_facade", "source_building", "brongevel"),
         ("receiving_facade", "receiving_building", "ontvangende gevel"),
     ):
-        facade = resolved.get(facade_key)
+        facade = facade_refs.get(facade_key)
         building = resolved.get(building_key)
         if facade is not None and building is not None:
-            # Group hierarchy is only a meaningful ownership signal when the
-            # facade is actually nested below the selected building.
-            ancestor_uid = parent_by_uid.get(facade.uid)
-            is_descendant = False
-            while ancestor_uid:
-                if ancestor_uid == building.uid:
-                    is_descendant = True
-                    break
-                ancestor_uid = parent_by_uid.get(ancestor_uid)
-            if facade.uid != building.uid and not is_descendant:
+            if facade["kind"] == "group":
+                group = facade["group"]
+                ancestor_uid = parent_by_uid.get(group.uid)
+                is_descendant = group.uid == building.uid
+                while ancestor_uid and not is_descendant:
+                    is_descendant = ancestor_uid == building.uid
+                    ancestor_uid = parent_by_uid.get(ancestor_uid)
+                if not is_descendant:
+                    warnings.append(
+                        f"De relatie tussen {label} en het gekozen gebouw kan "
+                        "niet uit de groepsstructuur worden bevestigd."
+                    )
+            else:
                 warnings.append(
-                    f"De relatie tussen {label} en het gekozen gebouw kan "
-                    "niet uit de groepsstructuur worden bevestigd."
+                    f"De losse IFC-gevel ({label}) heeft geen groepsrelatie "
+                    "waarmee het bijbehorende gebouw kan worden bevestigd."
                 )
 
     compartment = resolved.get("fire_compartment")
@@ -307,8 +383,10 @@ def validate_selection(scene, selection):
             )
 
     opening_sets = {}
-    for key, label in (("source_openings", "brongevel"),
-                       ("receiving_openings", "ontvangende gevel")):
+    for key, facade_key, label in (
+        ("source_openings", "source_facade", "brongevel"),
+        ("receiving_openings", "receiving_facade", "ontvangende gevel"),
+    ):
         uids = selection.get(key, []) or []
         if not isinstance(uids, list):
             errors.append(f"De openingstoewijzing aan de {label} is ongeldig.")
@@ -323,6 +401,7 @@ def validate_selection(scene, selection):
         if len(uids) != len(unique_uids):
             errors.append(f"Een opening is dubbel toegewezen aan de {label}.")
         opening_sets[key] = unique_uids
+        facade = facade_refs.get(facade_key)
         for uid in uids:
             group = by_uid.get(uid)
             if group is None:
@@ -338,6 +417,31 @@ def validate_selection(scene, selection):
                 continue
             if _newell_normal(outline) is None or _outline_dimensions(outline) is None:
                 errors.append(f"De contour van een opening aan de {label} is ongeldig of gedegenereerd.")
+                continue
+
+            record = _windowizer_host_record(scene, uid)
+            host_tag = _host_ifc_tag(record)
+            if facade is not None and facade["kind"] == "faces":
+                if host_tag is None or host_tag.get("id") is None:
+                    warnings.append(
+                        f"De oorspronkelijke IFC-herkomst van een opening aan de "
+                        f"{label} is niet vastgelegd; gevelrelatie niet bevestigd."
+                    )
+                elif (host_tag.get("class") != "IfcWall"
+                      or str(host_tag.get("id")) != facade["id"]):
+                    errors.append(
+                        f"De opgeslagen oorspronkelijke wand van een opening aan "
+                        f"de {label} komt niet overeen met de geselecteerde IFC-gevel."
+                    )
+            elif facade is not None:
+                warnings.append(
+                    f"De oorspronkelijke wand van een opening aan de {label} "
+                    "kan niet eenduidig aan deze groepsgevel worden gekoppeld."
+                )
+            elif record is None:
+                warnings.append(
+                    f"De herkomst van een opening aan de {label} is niet beschikbaar."
+                )
 
     shared = opening_sets["source_openings"] & opening_sets["receiving_openings"]
     if shared:
@@ -348,8 +452,9 @@ def validate_selection(scene, selection):
     if not selection.get("receiving_openings"):
         warnings.append("Er zijn geen openingen aan de ontvangende gevel toegewezen.")
     warnings.append(
-        "De ligging van openingen ten opzichte van de gekozen gevelvlakken en "
-        "de begrenzing van het brandcompartiment is nog niet geometrisch bewezen."
+        "De ligging van openingen binnen de geometrische begrenzing van de "
+        "geselecteerde gevelvlakken en de begrenzing van het brandcompartiment "
+        "is nog niet volledig geometrisch bewezen."
     )
     return {"errors": errors, "warnings": warnings,
             "valid": not errors, "resolved": resolved}
@@ -529,18 +634,20 @@ class BrandoverslagPanel(QWidget):
         self.refresh()
 
     def _refresh_selection_choices(self) -> None:
-        """Rebuild role selectors while retaining saved stable group IDs."""
+        """Rebuild role selectors, including stable IFC IDs for loose walls."""
         state = self.app.document_data({}) or {}
         selected = state.get("selection", {})
         groups = list(_walk_groups(getattr(self.app.scene, "groups", None)))
         choices = group_selection_choices(groups)
-        available = {uid for _label, uid in choices}
+        facade_choices = facade_selection_choices(self.app.scene)
         for key, combo in self._selection_combos.items():
             combo.blockSignals(True)
             current_uid = selected.get(key)
             combo.clear()
             combo.addItem(tr("— niet geselecteerd —"), None)
-            for label, uid in choices:
+            role_choices = facade_choices if key in ("source_facade", "receiving_facade") else choices
+            available = {uid for _label, uid in role_choices}
+            for label, uid in role_choices:
                 combo.addItem(label, uid)
             index = combo.findData(current_uid) if current_uid in available else 0
             combo.setCurrentIndex(max(index, 0))
@@ -558,8 +665,15 @@ class BrandoverslagPanel(QWidget):
                                    else Qt.CheckState.Unchecked)
                 opening_list.addItem(item)
             opening_list.blockSignals(False)
-        chosen = sum(1 for key in self._selection_combos
-                     if selected.get(key) in available)
+        chosen = sum(
+            1 for key in self._selection_combos
+            if selected.get(key) in {
+                uid for _label, uid in (
+                    facade_choices if key in ("source_facade", "receiving_facade")
+                    else choices
+                )
+            }
+        )
         opening_count = sum(
             1 for key in self.opening_lists
             for uid in selected.get(key, []) if uid in {u for _label, u in opening_choices}
@@ -584,7 +698,7 @@ class BrandoverslagPanel(QWidget):
         self.validation_status.setText("\\n".join(messages))
 
     def _save_selection(self, _index=None) -> None:
-        """Persist role assignments by stable group UID, never by row/name."""
+        """Persist group UIDs or stable loose-IFC references, never row/name."""
         state = self.app.document_data({}) or {}
         selection = state.get("selection", {})
         selection.update({
