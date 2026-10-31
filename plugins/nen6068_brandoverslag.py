@@ -398,7 +398,7 @@ class BrandoverslagPanel(QWidget):
         report = validate_selection(self.app.scene, selection)
         messages = (["Fouten:"] + ["• " + x for x in report["errors"]]
                     if report["errors"] else ["Geen ontbrekende of tegenstrijdige rolkoppelingen."])
-        if report["warnings]:
+        if report["warnings"]:
             messages += ["Aandachtspunten:"] + ["• " + x for x in report["warnings"]]
         self.validation_status.setText("\n".join(messages))
 
