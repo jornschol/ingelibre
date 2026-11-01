@@ -150,30 +150,30 @@ def inspect_scene(scene):
     rows = []
     tagged_groups = 0
     opening_count = 0
-    from core.group import iter_placements
-
     for group in _walk_groups(getattr(scene, "groups", None)):
         tag = getattr(group, "ifc", None) or {}
         if tag:
             tagged_groups += 1
-        # Count only this group's own mesh here; nested groups are visited
-        # separately by _walk_groups and must not be counted more than once.
+        # The inventory row shows the total for this group tree, including
+        # nested placements. The scene-wide count below still counts each
+        # group's own mesh once as _walk_groups visits every group separately.
         own_faces = getattr(getattr(group, "mesh", None), "faces", ())
         face_count = len(own_faces)
-        group_openings = sum(
+        own_openings = sum(
             1 for face in own_faces
             if (getattr(face, "attrs", None) or {}).get("mat") == OPENING_MATERIAL
         )
-        # Avoid listing every untagged nested helper group.
+        group_openings = len(_opening_faces_in_group_tree(group))
+        # Keep a parent row when it contains openings in nested groups too.
         if not tag and not group_openings:
             continue
-        opening_count += group_openings
+        opening_count += own_openings
         rows.append({
             "name": getattr(group, "name", ""),
             "ifc": tag.get("class", tr("Geen IFC-classificatie")),
             "kind": tr("Groep"),
             "faces": face_count,
-            "note": tr("{count} gevelopening(en)", count=group_openings)
+            "note": tr("{count} gevelopening(en) totaal", count=group_openings)
                     if group_openings else "",
         })
 
