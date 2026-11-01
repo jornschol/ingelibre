@@ -61,8 +61,8 @@ def test_opening_geometry_uses_nested_mirrored_and_translated_placements():
     vertices = found[0]["vertices"]
     xs = [p.x() for p in vertices]
     ys = [p.y() for p in vertices]
-    assert min(xs) == 3.8
-    assert max(xs) == 5.0
+    assert abs(min(xs) - 3.8) < 1e-6
+    assert abs(max(xs) - 5.0) < 1e-6
     assert all(abs(y - 2.0) < 1e-6 for y in ys)
 
 
@@ -95,4 +95,6 @@ def test_inventory_counts_marked_openings_in_nested_groups():
 
     assert result["opening_count"] == 1
     assert any(row["name"] == "Gebouw" and "1 gevelopening" in row["note"]
+               for row in result["rows"])
+    assert any(row["name"] == "Raam" and "1 gevelopening" in row["note"]
                for row in result["rows"])
