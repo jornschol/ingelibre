@@ -12,6 +12,7 @@ from plugins.nen6068_brandoverslag import (
     find_openings_in_building,
     inspect_scene,
     resolve_opening_reference,
+    validate_selection,
 )
 
 
@@ -98,3 +99,28 @@ def test_inventory_counts_marked_openings_in_nested_groups():
                for row in result["rows"])
     assert any(row["name"] == "Raam" and "1 gevelopening" in row["note"]
                for row in result["rows"])
+
+
+
+def test_source_building_is_used_as_fire_compartment_without_separate_selection():
+    scene = Scene()
+    source = Group(name="Brongebouw")
+    receiving = Group(name="Ontvangend gebouw")
+    source_facade = Group(name="Brongevel")
+    receiving_facade = Group(name="Ontvangende gevel")
+    source.adopt([source_facade])
+    receiving.adopt([receiving_facade])
+    scene.groups.extend([source, receiving])
+
+    report = validate_selection(scene, {
+        "source_building": source.uid,
+        "receiving_building": receiving.uid,
+        "source_facade": source_facade.uid,
+        "receiving_facade": receiving_facade.uid,
+        # A stale legacy value must not be required or override the alias.
+        "fire_compartment": "deleted-old-compartment",
+    })
+
+    assert report["valid"]
+    assert report["resolved"]["fire_compartment"] is source
+    assert report["resolved"]["source_building"] is source
