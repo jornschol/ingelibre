@@ -205,13 +205,17 @@ def validate_selection(scene, selection):
     for key, label in (
         ("source_building", "brongebouw"),
         ("receiving_building", "ontvangend gebouw"),
-        ("fire_compartment", "brandcompartiment"),
     ):
         group = by_uid.get(selection.get(key))
         if group is None:
             errors.append(f"Geen geldig {label} geselecteerd.")
         else:
             resolved[key] = group
+
+    # Temporary modelling assumption: the complete source building is the
+    # fire compartment. Keep the resolved alias for downstream code and
+    # compatibility, but do not ask the user to select it separately.
+    resolved["fire_compartment"] = resolved.get("source_building")
 
     for key, label in (("source_facade", "brongevel"),
                        ("receiving_facade", "ontvangende gevel")):
@@ -286,7 +290,6 @@ class BrandoverslagPanel(QWidget):
             ("receiving_building", tr("Ontvangend gebouw")),
             ("source_facade", tr("Brongevel")),
             ("receiving_facade", tr("Ontvangende gevel")),
-            ("fire_compartment", tr("Brandcompartiment")),
         ):
             combo = QComboBox()
             combo.addItem(tr("— niet geselecteerd —"), None)
@@ -381,7 +384,7 @@ class BrandoverslagPanel(QWidget):
             self.receiving_openings.addItem(item)
         self.receiving_openings.blockSignals(False)
 
-        chosen = sum(1 for key, combo in self._selection_combos.items()
+        chosen = sum(1 for combo in self._selection_combos.values()
                      if combo.currentData())
         self.selection_status.setText(
             tr("{chosen} van de {total} rollen gekoppeld · {source} bronopeningen "
