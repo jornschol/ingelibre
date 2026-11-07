@@ -11,6 +11,7 @@ from plugins.nen6068_brandoverslag import (
     OPENING_MATERIAL,
     find_openings_in_building,
     find_nearby_buildings,
+    building_selection_choices,
     top_level_buildings,
     inspect_scene,
     resolve_opening_reference,
@@ -146,14 +147,16 @@ def test_nearby_buildings_are_found_per_opening_with_15m_cutoff():
     source.adopt([opening])
 
     near = Group(_plane_mesh(14.9), "Gebouw binnen 15m")
+    boundary = Group(_plane_mesh(15.0), "Gebouw precies op 15m")
     far = Group(_plane_mesh(15.1), "Gebouw buiten 15m")
-    scene.groups.extend([source, near, far])
+    scene.groups.extend([source, near, boundary, far])
 
     source_opening = find_openings_in_building(scene, source.uid)[0]
     matches = find_nearby_buildings(scene, source.uid, source_opening)
 
-    assert [item["uid"] for item in matches] == [near.uid]
+    assert [item["uid"] for item in matches] == [near.uid, boundary.uid]
     assert abs(matches[0]["distance"] - 14.9) < 1e-5
+    assert abs(matches[1]["distance"] - 15.0) < 1e-5
 
 
 def test_nearby_building_distance_includes_nested_group_transforms():
@@ -191,3 +194,16 @@ def test_only_top_level_groups_are_treated_as_buildings():
     assert [group.uid for group in top_level_buildings(scene, source.uid)] == [
         neighbour.uid
     ]
+
+
+
+def test_building_choices_only_include_top_level_groups():
+    scene = Scene()
+    building = Group(name="Gebouw")
+    nested = Group(name="Onderdeel")
+    building.adopt([nested])
+    scene.groups.append(building)
+
+    choices = building_selection_choices(scene)
+
+    assert [uid for _label, uid in choices] == [building.uid]
