@@ -1040,7 +1040,8 @@ class BrandoverslagPanel(QWidget):
             floors = analyse_building_floors(source)
             roof = analyse_building_roof(source)
             walls = analyse_building_walls(source)
-            footprint = reconstruct_building_footprint(\n                source, wall_thickness=float(self.wall_thickness.value()))
+            footprint = reconstruct_building_footprint(
+                source, wall_thickness=float(self.wall_thickness.value()))
             ground_status = (
                 tr("begane grond: {area:.2f} m²", area=floors["ground_floor_area"])
                 if floors["ground_floor_valid"] else
@@ -1067,9 +1068,19 @@ class BrandoverslagPanel(QWidget):
                 tr("buitencontour: niet gesloten — {reason}",
                    reason="; ".join(footprint["errors"]))
             )
+            inner_status = (
+                tr("binnencontour: {count} contour(en) · wanddikte {thickness:.3f} m",
+                   count=len(footprint["inner_contours"]),
+                   thickness=footprint["wall_thickness"])
+                if footprint["inner_valid"] else
+                tr("binnencontour niet geldig — {reason}",
+                   reason="; ".join(footprint["inner_errors"]) or
+                   "buitencontour niet geldig")
+            )
             self.floor_summary.setText(
                 ground_status + " · " + first_status + " · " +
-                roof_status + " · " + wall_status + " · " + footprint_status)
+                roof_status + " · " + wall_status + " · " + footprint_status +
+                " · " + inner_status)
         self.source_openings.clear()
         for item in report["opening_analysis"]:
             opening = item["opening"]
