@@ -19,6 +19,7 @@ from plugins.nen6068_brandoverslag import (
     _opening_to_building_distance,
     analyse_building_floors,
     analyse_building_roof,
+    analyse_building_walls,
 )
 
 
@@ -337,6 +338,43 @@ def test_roof_detection_uses_world_space_orientation_for_nested_faces():
 
     assert result["roof_face_count"] == 1
     assert result["roof_faces"][0]["normal"][2] > 0
+
+
+def test_wall_detection_includes_outward_vertical_planes_only():
+    building = Group(name="Woning")
+    wall = Group(_oriented_plane_mesh([
+        (0, 0, 0), (0, 2, 0), (0, 2, 3), (0, 0, 3),
+    ]), "Buitenwand")
+    slanted_wall = Group(_oriented_plane_mesh([
+        (3, 0, 0), (3, 2, 0), (3.2, 2, 3), (3.2, 0, 3),
+    ]), "Licht hellende wand")
+    roof = Group(_oriented_plane_mesh([
+        (6, 0, 2), (8, 0, 3), (8, 2, 3), (6, 2, 2),
+    ]), "Dak")
+    building.adopt([wall, slanted_wall, roof])
+
+    result = analyse_building_walls(building)
+
+    assert result["wall_face_count"] == 2
+    assert {item["group"].name for item in result["wall_faces"]} == {
+        "Buitenwand", "Licht hellende wand"
+    }
+    assert all(abs(item["normal"][2]) <= 0.1 for item in result["wall_faces"])
+
+
+def test_wall_detection_uses_world_space_orientation_for_nested_faces():
+    building = Group(name="Woning")
+    wall = Group(_oriented_plane_mesh([
+        (0, 0, 0), (0, 2, 0), (0, 2, 3), (0, 0, 3),
+    ]), "Buitenwand")
+    transform = QMatrix4x4()
+    transform.rotate(90, QVector3D(0, 1, 0))
+    wall.xform = transform
+    building.adopt([wall])
+
+    result = analyse_building_walls(building)
+
+    assert result["wall_face_count"] == 0
 
 
 def test_building_floor_detection_reports_ambiguous_ground_faces():
