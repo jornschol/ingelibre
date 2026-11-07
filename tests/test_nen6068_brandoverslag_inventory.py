@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-import pytest
-
 from PySide6.QtGui import QMatrix4x4, QVector3D
 
 from core.group import Group
@@ -25,6 +23,7 @@ from plugins.nen6068_brandoverslag import (
     analyse_building_roof,
     analyse_building_walls,
     reconstruct_building_footprint,
+    offset_footprint_contour,
 )
 
 
