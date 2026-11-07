@@ -293,23 +293,36 @@ def _triangulate_points(points):
     return triangles
 
 
+def _triangulate_face(face, matrix=None):
+    """Triangulate a face, preserving concave boundaries and inner holes."""
+    from core.triangulate import triangulate
+
+    outer = list(getattr(face, "vertices", ()))
+    holes = list(getattr(face, "holes", ()))
+    if matrix is not None:
+        outer = [matrix.map(point) for point in outer]
+        holes = [[matrix.map(point) for point in loop] for loop in holes]
+    return [
+        tuple(_point_tuple(point) for point in triangle)
+        for triangle in triangulate(outer, holes)
+    ]
+
+
 def _world_mesh_triangles(group):
     from core.group import iter_placements
 
     triangles = []
     for placed, matrix in iter_placements(group):
         for face in getattr(placed.mesh, "faces", ()):
-            points = [v.position for v in face.loop]
-            if matrix is not None:
-                points = [matrix.map(point) for point in points]
-            triangles.extend(_triangulate_points(points))
+            triangles.extend(_triangulate_face(face, matrix))
     return triangles
 
 
-def _opening_to_building_distance(opening, building):
+def _opening_to_building_distance(opening, building, building_triangles=None):
     """Minimum surface distance from an opening polygon to a building mesh."""
     opening_triangles = _triangulate_points(opening.get("vertices", ()))
-    building_triangles = _world_mesh_triangles(building)
+    if building_triangles is None:
+        building_triangles = _world_mesh_triangles(building)
     if not opening_triangles or not building_triangles:
         return None
     best = float("inf")
@@ -332,15 +345,21 @@ def top_level_buildings(scene, source_building_uid=None):
 
 
 def find_nearby_buildings(scene, source_building_uid, opening,
-                          max_distance=15.0):
+                          max_distance=15.0, building_triangles_cache=None):
     """Find every other top-level group within max_distance of one opening.
 
     Distances are between the opening polygon and the actual placed building
-    surfaces, including nested group/component transforms.
+    surfaces, including nested group/component transforms. A caller analysing
+    several openings can share a per-building triangle cache.
     """
     matches = []
     for building in top_level_buildings(scene, source_building_uid):
-        distance = _opening_to_building_distance(opening, building)
+        triangles = None
+        if building_triangles_cache is not None:
+            if building.uid not in building_triangles_cache:
+                building_triangles_cache[building.uid] = _world_mesh_triangles(building)
+            triangles = building_triangles_cache[building.uid]
+        distance = _opening_to_building_distance(opening, building, triangles)
         if distance is not None and distance <= max_distance + 1e-9:
             matches.append({
                 "uid": building.uid,
@@ -419,10 +438,15 @@ def building_selection_choices(scene):
 def analyse_source_building(scene, source_building_uid, max_distance=15.0):
     """Return every marked source opening and its nearby top-level buildings."""
     openings = find_openings_in_building(scene, source_building_uid)
+    # Neighbour geometry is static during this analysis. Triangulate each
+    # building once, then reuse it for every source opening.
+    building_triangles_cache = {}
     return [{
         "opening": opening,
         "nearby_buildings": find_nearby_buildings(
-            scene, source_building_uid, opening, max_distance=max_distance
+            scene, source_building_uid, opening,
+            max_distance=max_distance,
+            building_triangles_cache=building_triangles_cache,
         ),
     } for opening in openings]
 
