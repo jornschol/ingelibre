@@ -275,10 +275,22 @@ def _triangle_distance_squared(first, second):
 
 
 def _triangulate_points(points):
-    """Fan-triangulate a planar polygon; opening faces are expected to be simple."""
+    """Fan-triangulate a planar polygon, omitting degenerate triangles."""
     points = [_point_tuple(p) if hasattr(p, "x") else tuple(p) for p in points]
-    return [(points[0], points[i], points[i + 1])
-            for i in range(1, len(points) - 1)] if len(points) >= 3 else []
+    if len(points) < 3:
+        return []
+    triangles = []
+    for index in range(1, len(points) - 1):
+        a, b, c = points[0], points[index], points[index + 1]
+        ab, ac = _sub(b, a), _sub(c, a)
+        cross = (
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+        )
+        if _dot(cross, cross) > 1e-20:
+            triangles.append((a, b, c))
+    return triangles
 
 
 def _world_mesh_triangles(group):
