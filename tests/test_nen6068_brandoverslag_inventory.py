@@ -147,6 +147,7 @@ def test_nearby_buildings_are_found_per_opening_with_15m_cutoff():
     source.adopt([opening])
 
     near = Group(_plane_mesh(14.9), "Gebouw binnen 15m")
+    near.mesh.faces[0].attrs["mat"] = OPENING_MATERIAL
     boundary = Group(_plane_mesh(15.0), "Gebouw precies op 15m")
     far = Group(_plane_mesh(15.1), "Gebouw buiten 15m")
     scene.groups.extend([source, near, boundary, far])
@@ -156,6 +157,7 @@ def test_nearby_buildings_are_found_per_opening_with_15m_cutoff():
 
     assert [item["uid"] for item in matches] == [near.uid, boundary.uid]
     assert abs(matches[0]["distance"] - 14.9) < 1e-5
+    assert len(matches[0]["openings"]) == 1
     assert abs(matches[1]["distance"] - 15.0) < 1e-5
 
 
