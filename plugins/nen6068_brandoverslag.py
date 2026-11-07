@@ -572,19 +572,147 @@ def _wall_base_segments(wall_faces, height_tolerance=WALL_BASE_TOLERANCE):
     return segments
 
 
-def reconstruct_building_footprint(building, vertex_tolerance=WALL_VERTEX_TOLERANCE,
-                                   height_tolerance=WALL_BASE_TOLERANCE):
-    """Reconstruct closed footprint loops from the lowest edges of wall faces.
+def _polygon_signed_area_xy(points):
+    return 0.5 * sum(
+        points[index][0] * points[(index + 1) % len(points)][1]
+        - points[(index + 1) % len(points)][0] * points[index][1]
+        for index in range(len(points))
+    )
 
-    Endpoints are clustered within vertex_tolerance. Each resulting vertex
-    must have degree two; open, branched, or duplicate-edge contours are
-    reported rather than guessed. Multiple closed loops are supported.
+
+def _orientation_xy(a, b, c, tolerance=1e-9):
+    value = ((b[0] - a[0]) * (c[1] - a[1])
+             - (b[1] - a[1]) * (c[0] - a[0]))
+    return 0 if abs(value) <= tolerance else (1 if value > 0 else -1)
+
+
+def _segments_intersect_xy(a, b, c, d, tolerance=1e-9):
+    o1 = _orientation_xy(a, b, c, tolerance)
+    o2 = _orientation_xy(a, b, d, tolerance)
+    o3 = _orientation_xy(c, d, a, tolerance)
+    o4 = _orientation_xy(c, d, b, tolerance)
+    if o1 != o2 and o3 != o4:
+        return True
+
+    def on_segment(p, q, r):
+        return (min(p[0], r[0]) - tolerance <= q[0] <= max(p[0], r[0]) + tolerance
+                and min(p[1], r[1]) - tolerance <= q[1] <= max(p[1], r[1]) + tolerance)
+
+    return ((o1 == 0 and on_segment(a, c, b))
+            or (o2 == 0 and on_segment(a, d, b))
+            or (o3 == 0 and on_segment(c, a, d))
+            or (o4 == 0 and on_segment(c, b, d)))
+
+
+def _polygon_is_simple_xy(points, tolerance=1e-9):
+    count = len(points)
+    for first in range(count):
+        a, b = points[first], points[(first + 1) % count]
+        if ((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2) <= tolerance ** 2:
+            return False
+        for second in range(first + 1, count):
+            # Adjacent edges share a legitimate endpoint.
+            if second == first or second == (first + 1) % count:
+                continue
+            if first == (second + 1) % count:
+                continue
+            c, d = points[second], points[(second + 1) % count]
+            if _segments_intersect_xy(a, b, c, d, tolerance):
+                return False
+    return True
+
+
+def offset_footprint_contour(contour, distance):
+    """Offset one simple, horizontal XY footprint towards its polygon interior.
+
+    The contour may be clockwise or counter-clockwise. Adjacent offset lines
+    are intersected at their corners; invalid or collapsed results are refused.
     """
+    try:
+        distance = float(distance)
+    except (TypeError, ValueError):
+        return {"valid": False, "contour": [], "errors": ["Ongeldige wanddikte."]}
+    if distance <= 0:
+        return {"valid": False, "contour": [], "errors": ["Wanddikte moet groter zijn dan nul."]}
+
+    points = [tuple(point) for point in contour]
+    if len(points) > 1 and _distance_squared(points[0], points[-1]) <= 1e-12:
+        points.pop()
+    if len(points) < 3:
+        return {"valid": False, "contour": [], "errors": ["Contour bevat minder dan drie hoekpunten."]}
+
+    z_values = [point[2] for point in points]
+    if max(z_values) - min(z_values) > 1e-4:
+        return {"valid": False, "contour": [], "errors": ["Contour ligt niet in één horizontaal vlak."]}
+    xy = [(point[0], point[1]) for point in points]
+    area = _polygon_signed_area_xy(xy)
+    if abs(area) <= 1e-9 or not _polygon_is_simple_xy(xy):
+        return {"valid": False, "contour": [], "errors": ["Buitencontour is ongeldig of zelfsnijdend."]}
+
+    orientation = 1.0 if area > 0 else -1.0
+    shifted_lines = []
+    count = len(xy)
+    for index, start in enumerate(xy):
+        end = xy[(index + 1) % count]
+        dx, dy = end[0] - start[0], end[1] - start[1]
+        length = (dx * dx + dy * dy) ** 0.5
+        if length <= 1e-9:
+            return {"valid": False, "contour": [], "errors": ["Contour bevat een nul-lengte rand."]}
+        nx, ny = -dy / length * orientation, dx / length * orientation
+        shifted_lines.append((
+            (start[0] + nx * distance, start[1] + ny * distance),
+            (dx / length, dy / length),
+        ))
+
+    result_xy = []
+    for index in range(count):
+        previous_point, previous_direction = shifted_lines[index - 1]
+        current_point, current_direction = shifted_lines[index]
+        cross = (previous_direction[0] * current_direction[1]
+                 - previous_direction[1] * current_direction[0])
+        delta = (current_point[0] - previous_point[0],
+                 current_point[1] - previous_point[1])
+        if abs(cross) <= 1e-9:
+            dot = (previous_direction[0] * current_direction[0]
+                   + previous_direction[1] * current_direction[1])
+            if dot < 0:
+                return {"valid": False, "contour": [], "errors": ["Offset heeft een ongeldige hoek."]}
+            # Collinear consecutive edges share the same offset line.
+            result_xy.append(current_point)
+            continue
+        parameter = (delta[0] * current_direction[1]
+                     - delta[1] * current_direction[0]) / cross
+        result_xy.append((
+            previous_point[0] + parameter * previous_direction[0],
+            previous_point[1] + parameter * previous_direction[1],
+        ))
+
+    result_area = _polygon_signed_area_xy(result_xy)
+    if (abs(result_area) <= 1e-8
+            or result_area * area <= 0
+            or not _polygon_is_simple_xy(result_xy)):
+        return {"valid": False, "contour": [], "errors": [
+            "Binnencontour is door de gekozen wanddikte ingestort of zelfsnijdend."
+        ]}
+    z = sum(z_values) / len(z_values)
+    return {
+        "valid": True,
+        "contour": [(point[0], point[1], z) for point in result_xy],
+        "errors": [],
+        "area": abs(result_area),
+    }
+
+
+def reconstruct_building_footprint(building, vertex_tolerance=WALL_VERTEX_TOLERANCE,
+                                   height_tolerance=WALL_BASE_TOLERANCE,
+                                   wall_thickness=DEFAULT_WALL_THICKNESS):
+    """Reconstruct the exterior footprint and its inward wall-thickness offset."""
     walls = analyse_building_walls(building)
     segments = _wall_base_segments(walls["wall_faces"], height_tolerance)
     if not segments:
         return {
-            "contours": [], "segments": [], "valid": False,
+            "contours": [], "inner_contours": [], "segments": [], "valid": False,
+            "inner_valid": False,
             "errors": ["Geen horizontale onderranden van wandvlakken gevonden."],
             "wall_face_count": walls["wall_face_count"],
         }
@@ -660,15 +788,32 @@ def reconstruct_building_footprint(building, vertex_tolerance=WALL_VERTEX_TOLERA
             if errors:
                 break
 
+    inner_contours = []
+    inner_errors = []
+    if not errors:
+        for index, contour in enumerate(contours):
+            offset = offset_footprint_contour(contour, wall_thickness)
+            if not offset["valid"]:
+                inner_errors.extend(
+                    f"Contour {index + 1}: {message}" for message in offset["errors"]
+                )
+            else:
+                inner_contours.append(offset["contour"])
+
     return {
         "contours": contours,
+        "inner_contours": inner_contours,
         "segments": segments,
         "valid": bool(contours) and not errors,
+        "inner_valid": bool(contours) and len(inner_contours) == len(contours) and not inner_errors,
         "errors": errors,
+        "inner_errors": inner_errors,
         "wall_face_count": walls["wall_face_count"],
         "vertex_count": len(node_points),
         "edge_count": len(edges),
+        "wall_thickness": float(wall_thickness),
     }
+
 
 
 def inspect_scene(scene):
@@ -895,7 +1040,7 @@ class BrandoverslagPanel(QWidget):
             floors = analyse_building_floors(source)
             roof = analyse_building_roof(source)
             walls = analyse_building_walls(source)
-            footprint = reconstruct_building_footprint(source)
+            footprint = reconstruct_building_footprint(\n                source, wall_thickness=float(self.wall_thickness.value()))
             ground_status = (
                 tr("begane grond: {area:.2f} m²", area=floors["ground_floor_area"])
                 if floors["ground_floor_valid"] else
