@@ -16,6 +16,7 @@ from plugins.nen6068_brandoverslag import (
     inspect_scene,
     resolve_opening_reference,
     validate_selection,
+    _opening_to_building_distance,
 )
 
 
@@ -209,3 +210,52 @@ def test_building_choices_only_include_top_level_groups():
     choices = building_selection_choices(scene)
 
     assert [uid for _label, uid in choices] == [building.uid]
+
+
+
+def _opening_polygon(x0, y0, x1, y1, z=0):
+    return {
+        "vertices": [
+            QVector3D(x0, y0, z), QVector3D(x1, y0, z),
+            QVector3D(x1, y1, z), QVector3D(x0, y1, z),
+        ]
+    }
+
+
+def test_building_distance_respects_concave_face_boundary():
+    mesh = Mesh()
+    mesh.add_face([
+        QVector3D(0, 0, 0), QVector3D(3, 0, 0),
+        QVector3D(3, 1, 0), QVector3D(1, 1, 0),
+        QVector3D(1, 3, 0), QVector3D(0, 3, 0),
+    ])
+    building = Group(mesh, "Concave gebouw")
+
+    # This opening lies in the missing upper-right corner of the L-shaped face.
+    distance = _opening_to_building_distance(
+        _opening_polygon(1.5, 1.5, 2.5, 2.5), building
+    )
+
+    assert abs(distance - 0.5) < 1e-5
+
+
+def test_building_distance_respects_hole_in_face():
+    mesh = Mesh()
+    mesh.add_face(
+        [
+            QVector3D(0, 0, 0), QVector3D(4, 0, 0),
+            QVector3D(4, 4, 0), QVector3D(0, 4, 0),
+        ],
+        hole_loops=[[
+            QVector3D(1, 1, 0), QVector3D(3, 1, 0),
+            QVector3D(3, 3, 0), QVector3D(1, 3, 0),
+        ]],
+    )
+    building = Group(mesh, "Gebouw met vide")
+
+    # The opening lies entirely in the hole; it must not be treated as face area.
+    distance = _opening_to_building_distance(
+        _opening_polygon(1.5, 1.5, 2.5, 2.5), building
+    )
+
+    assert abs(distance - 0.5) < 1e-5
