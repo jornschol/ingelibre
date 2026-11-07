@@ -391,7 +391,17 @@ def inspect_scene(scene):
 
 def building_selection_choices(scene):
     """Only top-level scene groups represent buildings in this workflow."""
-    return group_selection_choices(getattr(scene, "groups", None))
+    choices = []
+    for group in getattr(scene, "groups", None) or ():
+        uid = getattr(group, "uid", None)
+        if not uid:
+            continue
+        ifc_class = ((getattr(group, "ifc", None) or {}).get("class") or "")
+        label = getattr(group, "name", "") or tr("Naamloos gebouw")
+        if ifc_class:
+            label += f" [{ifc_class}]"
+        choices.append((f"{label} · {uid[:6]}", uid))
+    return choices
 
 
 def analyse_source_building(scene, source_building_uid, max_distance=15.0):
