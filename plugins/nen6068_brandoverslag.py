@@ -11,7 +11,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QFormLayout, QHeaderView, QLabel,
     QListWidget, QListWidgetItem, QPushButton, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QTableWidgetItem, QVBoxLayout, QWidget, QDoubleSpinBox,
 )
 
 from core.i18n import tr
@@ -516,6 +516,38 @@ def analyse_building_roof(building, upward_tolerance=1e-6):
     }
 
 
+def analyse_building_walls(building, normal_z_tolerance=WALL_NORMAL_Z_TOLERANCE):
+    """Detect outward-facing, predominantly vertical wall planes in world space.
+
+    The face winding is expected to point outwards. A small vertical component
+    is allowed for slightly leaning walls; upward roof faces are handled by the
+    separate roof detector.
+    """
+    from core.group import iter_placements
+
+    wall_faces = []
+    for placed, matrix in iter_placements(building):
+        for index, face in enumerate(getattr(placed.mesh, "faces", ())):
+            normal = _face_world_normal(face, matrix)
+            if normal is None or abs(normal[2]) > normal_z_tolerance:
+                continue
+            wall_faces.append({
+                "group": placed,
+                "face_index": index,
+                "normal": normal,
+                "area": _face_area(face, matrix),
+                "vertices": [
+                    matrix.map(point) if matrix is not None else type(point)(point)
+                    for point in face.vertices
+                ],
+            })
+    return {
+        "wall_faces": wall_faces,
+        "wall_face_count": len(wall_faces),
+        "wall_area": sum(item["area"] for item in wall_faces),
+    }
+
+
 def inspect_scene(scene):
     rows = []
     tagged_groups = 0
@@ -660,6 +692,14 @@ class BrandoverslagPanel(QWidget):
         self.source_building.addItem(tr("— selecteer brongebouw —"), None)
         self.source_building.currentIndexChanged.connect(self._save_selection)
         selection_form.addRow(tr("Brongebouw / brandcompartiment"), self.source_building)
+        self.wall_thickness = QDoubleSpinBox()
+        self.wall_thickness.setDecimals(3)
+        self.wall_thickness.setRange(0.05, 1.0)
+        self.wall_thickness.setSingleStep(0.01)
+        self.wall_thickness.setSuffix(" m")
+        self.wall_thickness.setValue(DEFAULT_WALL_THICKNESS)
+        self.wall_thickness.valueChanged.connect(self._save_wall_thickness)
+        selection_form.addRow(tr("Uniforme wanddikte"), self.wall_thickness)
         layout.addLayout(selection_form)
 
         self.source_openings = QListWidget()
@@ -714,6 +754,16 @@ class BrandoverslagPanel(QWidget):
         self.source_building.setCurrentIndex(index if index >= 0 else 0)
         self.source_building.blockSignals(False)
 
+        source_uid = selected.get("source_building")
+        wall_thicknesses = selected.get("wall_thicknesses", {})
+        self.wall_thickness.blockSignals(True)
+        self.wall_thickness.setEnabled(bool(source_uid))
+        self.wall_thickness.setValue(
+            float(wall_thicknesses.get(source_uid, DEFAULT_WALL_THICKNESS))
+            if source_uid else DEFAULT_WALL_THICKNESS
+        )
+        self.wall_thickness.blockSignals(False)
+
         report = validate_selection(self.app.scene, selected)
         source = report["resolved"].get("source_building")
         if source is None:
@@ -721,6 +771,7 @@ class BrandoverslagPanel(QWidget):
         else:
             floors = analyse_building_floors(source)
             roof = analyse_building_roof(source)
+            walls = analyse_building_walls(source)
             ground_status = (
                 tr("begane grond: {area:.2f} m²", area=floors["ground_floor_area"])
                 if floors["ground_floor_valid"] else
@@ -737,8 +788,12 @@ class BrandoverslagPanel(QWidget):
             roof_status = tr(
                 "dak: {count} naar boven gerichte vlakken · {area:.2f} m²",
                 count=roof["roof_face_count"], area=roof["roof_area"])
+            wall_status = tr(
+                "buitenwanden: {count} vlakken · {area:.2f} m²",
+                count=walls["wall_face_count"], area=walls["wall_area"])
             self.floor_summary.setText(
-                ground_status + " · " + first_status + " · " + roof_status)
+                ground_status + " · " + first_status + " · " +
+                roof_status + " · " + wall_status)
         self.source_openings.clear()
         for item in report["opening_analysis"]:
             opening = item["opening"]
@@ -772,6 +827,18 @@ class BrandoverslagPanel(QWidget):
         if report["warnings"]:
             messages += ["Aandachtspunten:"] + ["• " + x for x in report["warnings"]]
         self.validation_status.setText("\n".join(messages))
+
+    def _save_wall_thickness(self, value):
+        state = self.app.document_data({}) or {}
+        selection = state.get("selection", {})
+        source_uid = selection.get("source_building")
+        if not source_uid:
+            return
+        wall_thicknesses = selection.setdefault("wall_thicknesses", {})
+        wall_thicknesses[source_uid] = float(value)
+        selection["wall_thicknesses"] = wall_thicknesses
+        state["selection"] = selection
+        self.app.set_document_data(state)
 
     def _save_selection(self, _index=None):
         state = self.app.document_data({}) or {}
