@@ -1043,6 +1043,7 @@ class BrandoverslagPanel(QWidget):
         report = validate_selection(self.app.scene, selected)
         source = report["resolved"].get("source_building")
         if source is None:
+            self._footprint_overlay = None
             self.floor_summary.setText(tr("Selecteer een brongebouw om de vloergeometrie te controleren."))
         else:
             floors = analyse_building_floors(source)
@@ -1160,6 +1161,8 @@ class BrandoverslagPanel(QWidget):
         selection["wall_thicknesses"] = wall_thicknesses
         state["selection"] = selection
         self.app.set_document_data(state)
+        self._refresh_selection_choices()
+        self.app.viewport.update()
 
     def _save_selection(self, _index=None):
         state = self.app.document_data({}) or {}
