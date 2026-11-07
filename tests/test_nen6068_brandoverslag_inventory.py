@@ -18,6 +18,7 @@ from plugins.nen6068_brandoverslag import (
     validate_selection,
     _opening_to_building_distance,
     analyse_building_floors,
+    analyse_building_roof,
 )
 
 
@@ -289,6 +290,53 @@ def test_building_floor_detection_finds_ground_face_in_nested_group():
     assert result["ground_floor_valid"]
     assert result["ground_floor_face_count"] == 1
     assert abs(result["ground_floor_area"] - 1.2) < 1e-6
+
+
+def _oriented_plane_mesh(points):
+    mesh = Mesh()
+    mesh.add_face([QVector3D(*point) for point in points])
+    return mesh
+
+
+def test_roof_detection_includes_horizontal_and_sloping_upward_faces():
+    building = Group(name="Woning")
+    roof_horizontal = Group(_oriented_plane_mesh([
+        (0, 0, 3), (2, 0, 3), (2, 2, 3), (0, 2, 3),
+    ]), "Plat dak")
+    roof_sloped = Group(_oriented_plane_mesh([
+        (3, 0, 2), (5, 0, 3), (5, 2, 3), (3, 2, 2),
+    ]), "Hellend dak")
+    wall = Group(_oriented_plane_mesh([
+        (6, 0, 0), (6, 2, 0), (6, 2, 3), (6, 0, 3),
+    ]), "Gevel")
+    downward = Group(_oriented_plane_mesh([
+        (8, 0, 3), (8, 2, 3), (10, 2, 3), (10, 0, 3),
+    ]), "Onderzijde")
+    building.adopt([roof_horizontal, roof_sloped, wall, downward])
+
+    result = analyse_building_roof(building)
+
+    assert result["roof_face_count"] == 2
+    assert {item["group"].name for item in result["roof_faces"]} == {
+        "Plat dak", "Hellend dak"
+    }
+    assert all(item["normal"][2] > 0 for item in result["roof_faces"])
+
+
+def test_roof_detection_uses_world_space_orientation_for_nested_faces():
+    building = Group(name="Woning")
+    roof = Group(_oriented_plane_mesh([
+        (0, 0, 0), (2, 0, 0), (2, 2, 0), (0, 2, 0),
+    ]), "Dakvlak")
+    transform = QMatrix4x4()
+    transform.rotate(30, QVector3D(1, 0, 0))
+    roof.xform = transform
+    building.adopt([roof])
+
+    result = analyse_building_roof(building)
+
+    assert result["roof_face_count"] == 1
+    assert result["roof_faces"][0]["normal"][2] > 0
 
 
 def test_building_floor_detection_reports_ambiguous_ground_faces():
