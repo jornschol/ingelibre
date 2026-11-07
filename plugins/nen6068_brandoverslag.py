@@ -720,6 +720,7 @@ class BrandoverslagPanel(QWidget):
             self.floor_summary.setText(tr("Selecteer een brongebouw om de vloergeometrie te controleren."))
         else:
             floors = analyse_building_floors(source)
+            roof = analyse_building_roof(source)
             ground_status = (
                 tr("begane grond: {area:.2f} m²", area=floors["ground_floor_area"])
                 if floors["ground_floor_valid"] else
@@ -733,7 +734,11 @@ class BrandoverslagPanel(QWidget):
                 if floors["first_floor_face_count"] else
                 tr("eerste verdieping: geen horizontale vlakken gevonden in groep 'floor'")
             )
-            self.floor_summary.setText(ground_status + " · " + first_status)
+            roof_status = tr(
+                "dak: {count} naar boven gerichte vlakken · {area:.2f} m²",
+                count=roof["roof_face_count"], area=roof["roof_area"])
+            self.floor_summary.setText(
+                ground_status + " · " + first_status + " · " + roof_status)
         self.source_openings.clear()
         for item in report["opening_analysis"]:
             opening = item["opening"]
