@@ -10,6 +10,8 @@ from core.scene import Scene
 from plugins.nen6068_brandoverslag import (
     OPENING_MATERIAL,
     find_openings_in_building,
+    find_nearby_buildings,
+    top_level_buildings,
     inspect_scene,
     resolve_opening_reference,
     validate_selection,
@@ -124,3 +126,68 @@ def test_source_building_is_used_as_fire_compartment_without_separate_selection(
     assert report["valid"]
     assert report["resolved"]["fire_compartment"] is source
     assert report["resolved"]["source_building"] is source
+
+
+
+def _plane_mesh(z):
+    mesh = Mesh()
+    mesh.add_face([
+        QVector3D(0, 0, z), QVector3D(1.2, 0, z),
+        QVector3D(1.2, 1.0, z), QVector3D(0, 1.0, z),
+    ])
+    return mesh
+
+
+def test_nearby_buildings_are_found_per_opening_with_15m_cutoff():
+    scene = Scene()
+    source = Group(name="Brongebouw")
+    opening = Group(_plane_mesh(0), "Bronopening")
+    opening.mesh.faces[0].attrs["mat"] = OPENING_MATERIAL
+    source.adopt([opening])
+
+    near = Group(_plane_mesh(14.9), "Gebouw binnen 15m")
+    far = Group(_plane_mesh(15.1), "Gebouw buiten 15m")
+    scene.groups.extend([source, near, far])
+
+    source_opening = find_openings_in_building(scene, source.uid)[0]
+    matches = find_nearby_buildings(scene, source.uid, source_opening)
+
+    assert [item["uid"] for item in matches] == [near.uid]
+    assert abs(matches[0]["distance"] - 14.9) < 1e-5
+
+
+def test_nearby_building_distance_includes_nested_group_transforms():
+    scene = Scene()
+    source = Group(name="Brongebouw")
+    opening = Group(_plane_mesh(0), "Bronopening")
+    opening.mesh.faces[0].attrs["mat"] = OPENING_MATERIAL
+    source.adopt([opening])
+
+    neighbour = Group(name="Ontvangend gebouw")
+    nested = Group(_plane_mesh(0), "Geneste gevel")
+    from PySide6.QtGui import QMatrix4x4
+    placement = QMatrix4x4()
+    placement.translate(QVector3D(0, 0, 12))
+    nested.xform = placement
+    neighbour.adopt([nested])
+    scene.groups.extend([source, neighbour])
+
+    source_opening = find_openings_in_building(scene, source.uid)[0]
+    matches = find_nearby_buildings(scene, source.uid, source_opening)
+
+    assert len(matches) == 1
+    assert matches[0]["uid"] == neighbour.uid
+    assert abs(matches[0]["distance"] - 12.0) < 1e-5
+
+
+def test_only_top_level_groups_are_treated_as_buildings():
+    scene = Scene()
+    source = Group(name="Brongebouw")
+    nested = Group(name="Onderdeel van brongebouw")
+    source.adopt([nested])
+    neighbour = Group(name="Ander gebouw")
+    scene.groups.extend([source, neighbour])
+
+    assert [group.uid for group in top_level_buildings(scene, source.uid)] == [
+        neighbour.uid
+    ]
