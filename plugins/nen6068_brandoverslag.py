@@ -370,6 +370,11 @@ def find_nearby_buildings(scene, source_building_uid, opening,
     return sorted(matches, key=lambda item: item["distance"])
 
 
+DEFAULT_WALL_THICKNESS = 0.35
+WALL_NORMAL_Z_TOLERANCE = 0.1
+WALL_BASE_TOLERANCE = 0.01
+WALL_VERTEX_TOLERANCE = 1e-4
+
 FLOOR_GROUP_NAME = "floor"
 FLOOR_HEIGHT_TOLERANCE = 0.01
 
@@ -545,6 +550,124 @@ def analyse_building_walls(building, normal_z_tolerance=WALL_NORMAL_Z_TOLERANCE)
         "wall_faces": wall_faces,
         "wall_face_count": len(wall_faces),
         "wall_area": sum(item["area"] for item in wall_faces),
+    }
+
+
+def _wall_base_segments(wall_faces, height_tolerance=WALL_BASE_TOLERANCE):
+    """Extract the lowest horizontal boundary edges from each wall face."""
+    segments = []
+    for wall in wall_faces:
+        vertices = [tuple(point) if not hasattr(point, "x") else _point_tuple(point)
+                    for point in wall.get("vertices", ())]
+        if len(vertices) < 3:
+            continue
+        lowest = min(point[2] for point in vertices)
+        loop = vertices
+        for index, first in enumerate(loop):
+            second = loop[(index + 1) % len(loop)]
+            if (abs(first[2] - lowest) <= height_tolerance
+                    and abs(second[2] - lowest) <= height_tolerance
+                    and _distance_squared(first, second) > 1e-12):
+                segments.append((first, second))
+    return segments
+
+
+def reconstruct_building_footprint(building, vertex_tolerance=WALL_VERTEX_TOLERANCE,
+                                   height_tolerance=WALL_BASE_TOLERANCE):
+    """Reconstruct closed footprint loops from the lowest edges of wall faces.
+
+    Endpoints are clustered within vertex_tolerance. Each resulting vertex
+    must have degree two; open, branched, or duplicate-edge contours are
+    reported rather than guessed. Multiple closed loops are supported.
+    """
+    walls = analyse_building_walls(building)
+    segments = _wall_base_segments(walls["wall_faces"], height_tolerance)
+    if not segments:
+        return {
+            "contours": [], "segments": [], "valid": False,
+            "errors": ["Geen horizontale onderranden van wandvlakken gevonden."],
+            "wall_face_count": walls["wall_face_count"],
+        }
+
+    nodes = {}
+    node_points = []
+    edges = set()
+
+    def node_id(point):
+        key = tuple(round(value / vertex_tolerance) for value in point)
+        if key not in nodes:
+            nodes[key] = len(node_points)
+            node_points.append(tuple(point))
+        return nodes[key]
+
+    duplicate_count = 0
+    for first, second in segments:
+        a, b = node_id(first), node_id(second)
+        if a == b:
+            continue
+        edge = (min(a, b), max(a, b))
+        if edge in edges:
+            duplicate_count += 1
+            continue
+        edges.add(edge)
+
+    adjacency = [[] for _ in node_points]
+    for a, b in edges:
+        adjacency[a].append(b)
+        adjacency[b].append(a)
+
+    errors = []
+    irregular = [
+        (index, len(neighbours)) for index, neighbours in enumerate(adjacency)
+        if len(neighbours) != 2
+    ]
+    if irregular:
+        errors.append(
+            "Buitencontour is niet overal eenduidig gesloten "
+            f"({len(irregular)} hoekpunt(en) met een aansluitgraad anders dan 2)."
+        )
+    if duplicate_count:
+        errors.append(f"{duplicate_count} dubbele wandrand(en) aangetroffen.")
+
+    contours = []
+    visited_edges = set()
+    if not errors:
+        for start in range(len(node_points)):
+            for neighbour in adjacency[start]:
+                first_edge = (min(start, neighbour), max(start, neighbour))
+                if first_edge in visited_edges:
+                    continue
+                loop = [start]
+                previous, current = start, neighbour
+                visited_edges.add(first_edge)
+                while current != start:
+                    loop.append(current)
+                    candidates = [candidate for candidate in adjacency[current]
+                                  if candidate != previous]
+                    if len(candidates) != 1:
+                        errors.append("Buitencontour kon niet eenduidig worden gevolgd.")
+                        break
+                    following = candidates[0]
+                    edge = (min(current, following), max(current, following))
+                    if edge in visited_edges and following != start:
+                        errors.append("Wandranden bevatten een onverwachte kringverbinding.")
+                        break
+                    visited_edges.add(edge)
+                    previous, current = current, following
+                if errors:
+                    break
+                contours.append([node_points[index] for index in loop])
+            if errors:
+                break
+
+    return {
+        "contours": contours,
+        "segments": segments,
+        "valid": bool(contours) and not errors,
+        "errors": errors,
+        "wall_face_count": walls["wall_face_count"],
+        "vertex_count": len(node_points),
+        "edge_count": len(edges),
     }
 
 
