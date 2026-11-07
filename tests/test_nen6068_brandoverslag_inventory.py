@@ -439,10 +439,13 @@ def test_footprint_offset_moves_rectangle_edges_inward_by_wall_thickness():
 
     assert result["valid"]
     assert result["area"] == pytest.approx((4 - 0.7) * (3 - 0.7))
-    assert result["contour"] == pytest.approx([
+    expected = [
         (0.35, 0.35, 0), (3.65, 0.35, 0),
         (3.65, 2.65, 0), (0.35, 2.65, 0),
-    ])
+    ]
+    assert len(result["contour"]) == len(expected)
+    for actual_point, expected_point in zip(result["contour"], expected):
+        assert actual_point == pytest.approx(expected_point)
 
 
 def test_footprint_offset_is_independent_of_contour_winding():
