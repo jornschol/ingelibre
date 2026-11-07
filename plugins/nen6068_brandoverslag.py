@@ -369,6 +369,97 @@ def find_nearby_buildings(scene, source_building_uid, opening,
             })
     return sorted(matches, key=lambda item: item["distance"])
 
+
+FLOOR_GROUP_NAME = "floor"
+FLOOR_HEIGHT_TOLERANCE = 0.01
+
+
+def _horizontal_face_height(face, matrix=None, tolerance=FLOOR_HEIGHT_TOLERANCE):
+    """Return the face's world Z height when it is horizontal, else None."""
+    points = list(getattr(face, "vertices", ()))
+    if len(points) < 3:
+        return None
+    if matrix is not None:
+        points = [matrix.map(point) for point in points]
+    heights = [float(point.z()) for point in points]
+    if max(heights) - min(heights) > tolerance:
+        return None
+    return sum(heights) / len(heights)
+
+
+def _face_area(face, matrix=None):
+    """Area of a planar face, including its holes, in world square metres."""
+    triangles = _triangulate_face(face, matrix)
+    area = 0.0
+    for a, b, c in triangles:
+        ab, ac = _sub(b, a), _sub(c, a)
+        cross = (
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+        )
+        area += 0.5 * (_dot(cross, cross) ** 0.5)
+    return area
+
+
+def analyse_building_floors(building, ground_height=0.0,
+                            height_tolerance=FLOOR_HEIGHT_TOLERANCE):
+    """Detect the ground-floor face and the first-floor group in a building.
+
+    The ground floor may be directly in the building mesh or in any nested
+    group. The first floor is taken only from a group named 'floor'. Geometry
+    is measured in world coordinates, including nested placements and holes.
+    """
+    from core.group import iter_placements
+
+    ground_faces = []
+    for placed, matrix in iter_placements(building):
+        for index, face in enumerate(getattr(placed.mesh, "faces", ())):
+            height = _horizontal_face_height(face, matrix, height_tolerance)
+            if height is not None and abs(height - ground_height) <= height_tolerance:
+                ground_faces.append({
+                    "group": placed, "face_index": index,
+                    "height": height, "area": _face_area(face, matrix),
+                })
+
+    floor_groups = [
+        group for group in _walk_groups([building])
+        if (getattr(group, "name", "") or "").strip().casefold()
+        == FLOOR_GROUP_NAME
+    ]
+    first_floor_faces = []
+    seen = set()
+    for floor_group in floor_groups:
+        for placed, matrix in iter_placements(floor_group):
+            for index, face in enumerate(getattr(placed.mesh, "faces", ())):
+                height = _horizontal_face_height(face, matrix, height_tolerance)
+                if height is None or height <= ground_height + height_tolerance:
+                    continue
+                identity = (id(placed), index)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                first_floor_faces.append({
+                    "group": placed, "face_index": index,
+                    "height": height, "area": _face_area(face, matrix),
+                })
+
+    ground_area = sum(item["area"] for item in ground_faces)
+    first_floor_area = sum(item["area"] for item in first_floor_faces)
+    heights = [item["height"] for item in first_floor_faces]
+    return {
+        "ground_floor_faces": ground_faces,
+        "ground_floor_face_count": len(ground_faces),
+        "ground_floor_area": ground_area,
+        "ground_floor_valid": len(ground_faces) == 1,
+        "first_floor_faces": first_floor_faces,
+        "first_floor_face_count": len(first_floor_faces),
+        "first_floor_area": first_floor_area,
+        "first_floor_heights": sorted(set(round(value, 4) for value in heights)),
+        "first_floor_group_count": len(floor_groups),
+    }
+
+
 def inspect_scene(scene):
     rows = []
     tagged_groups = 0
@@ -504,6 +595,9 @@ class BrandoverslagPanel(QWidget):
         self.model_summary = QLabel()
         self.model_summary.setWordWrap(True)
         layout.addWidget(self.model_summary)
+        self.floor_summary = QLabel()
+        self.floor_summary.setWordWrap(True)
+        layout.addWidget(self.floor_summary)
 
         selection_form = QFormLayout()
         self.source_building = QComboBox()
@@ -565,6 +659,25 @@ class BrandoverslagPanel(QWidget):
         self.source_building.blockSignals(False)
 
         report = validate_selection(self.app.scene, selected)
+        source = report["resolved"].get("source_building")
+        if source is None:
+            self.floor_summary.setText(tr("Selecteer een brongebouw om de vloergeometrie te controleren."))
+        else:
+            floors = analyse_building_floors(source)
+            ground_status = (
+                tr("begane grond: {area:.2f} m²", area=floors["ground_floor_area"])
+                if floors["ground_floor_valid"] else
+                tr("begane grond: {count} horizontale vlakken op z=0 m (verwacht 1)",
+                   count=floors["ground_floor_face_count"])
+            )
+            first_status = (
+                tr("eerste verdieping: {area:.2f} m² op z={heights} m",
+                   area=floors["first_floor_area"],
+                   heights=", ".join(str(value) for value in floors["first_floor_heights"]))
+                if floors["first_floor_face_count"] else
+                tr("eerste verdieping: geen horizontale vlakken gevonden in groep 'floor'")
+            )
+            self.floor_summary.setText(ground_status + " · " + first_status)
         self.source_openings.clear()
         for item in report["opening_analysis"]:
             opening = item["opening"]
@@ -634,6 +747,7 @@ class BrandoverslagPanel(QWidget):
             self.status.setText(tr("Modelgegevens konden niet worden gelezen: {error}",
                                    error=str(exc)))
             self.model_summary.clear()
+            self.floor_summary.clear()
             self.inventory.setRowCount(0)
 
 
