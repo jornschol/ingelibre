@@ -146,6 +146,198 @@ def resolve_opening_reference(scene, reference):
     return {"group": group, "face": face, "face_index": index}
 
 
+
+def _point_tuple(point):
+    return (float(point.x()), float(point.y()), float(point.z()))
+
+
+def _dot(a, b):
+    return sum(x * y for x, y in zip(a, b))
+
+
+def _sub(a, b):
+    return tuple(x - y for x, y in zip(a, b))
+
+
+def _add_scaled(a, b, scale):
+    return tuple(x + scale * y for x, y in zip(a, b))
+
+
+def _distance_squared(a, b):
+    return _dot(_sub(a, b), _sub(a, b))
+
+
+def _point_triangle_distance_squared(point, a, b, c):
+    """Squared distance from a point to a triangle (Ericson region tests)."""
+    ab, ac, ap = _sub(b, a), _sub(c, a), _sub(point, a)
+    d1, d2 = _dot(ab, ap), _dot(ac, ap)
+    if d1 <= 0 and d2 <= 0:
+        return _distance_squared(point, a)
+    bp = _sub(point, b)
+    d3, d4 = _dot(ab, bp), _dot(ac, bp)
+    if d3 >= 0 and d4 <= d3:
+        return _distance_squared(point, b)
+    vc = d1 * d4 - d3 * d2
+    if vc <= 0 and d1 >= 0 and d3 <= 0:
+        v = d1 / (d1 - d3)
+        return _distance_squared(point, _add_scaled(a, ab, v))
+    cp = _sub(point, c)
+    d5, d6 = _dot(ab, cp), _dot(ac, cp)
+    if d6 >= 0 and d5 <= d6:
+        return _distance_squared(point, c)
+    vb = d5 * d2 - d1 * d6
+    if vb <= 0 and d2 >= 0 and d6 <= 0:
+        w = d2 / (d2 - d6)
+        return _distance_squared(point, _add_scaled(a, ac, w))
+    va = d3 * d6 - d5 * d4
+    if va <= 0 and (d4 - d3) >= 0 and (d5 - d6) >= 0:
+        edge = _sub(c, b)
+        w = (d4 - d3) / ((d4 - d3) + (d5 - d6))
+        return _distance_squared(point, _add_scaled(b, edge, w))
+    denom = 1.0 / (va + vb + vc)
+    v, w = vb * denom, vc * denom
+    closest = _add_scaled(_add_scaled(a, ab, v), ac, w)
+    return _distance_squared(point, closest)
+
+
+def _segment_segment_distance_squared(p1, q1, p2, q2):
+    """Squared minimum distance between two finite 3D line segments."""
+    d1, d2, r = _sub(q1, p1), _sub(q2, p2), _sub(p1, p2)
+    a, e, f = _dot(d1, d1), _dot(d2, d2), _dot(d2, r)
+    epsilon = 1e-12
+    if a <= epsilon and e <= epsilon:
+        return _distance_squared(p1, p2)
+    if a <= epsilon:
+        s, t = 0.0, max(0.0, min(1.0, f / e))
+    else:
+        c = _dot(d1, r)
+        if e <= epsilon:
+            t, s = 0.0, max(0.0, min(1.0, -c / a))
+        else:
+            b = _dot(d1, d2)
+            denom = a * e - b * b
+            s = max(0.0, min(1.0, (b * f - c * e) / denom)) if abs(denom) > epsilon else 0.0
+            t = (b * s + f) / e
+            if t < 0.0:
+                t, s = 0.0, max(0.0, min(1.0, -c / a))
+            elif t > 1.0:
+                t, s = 1.0, max(0.0, min(1.0, (b - c) / a))
+    c1, c2 = _add_scaled(p1, d1, s), _add_scaled(p2, d2, t)
+    return _distance_squared(c1, c2)
+
+
+def _segment_intersects_triangle(p, q, a, b, c):
+    """Möller–Trumbore segment/triangle intersection test."""
+    direction = _sub(q, p)
+    edge1, edge2 = _sub(b, a), _sub(c, a)
+    h = (
+        direction[1] * edge2[2] - direction[2] * edge2[1],
+        direction[2] * edge2[0] - direction[0] * edge2[2],
+        direction[0] * edge2[1] - direction[1] * edge2[0],
+    )
+    det = _dot(edge1, h)
+    if abs(det) < 1e-10:
+        return False
+    inv_det = 1.0 / det
+    offset = _sub(p, a)
+    u = inv_det * _dot(offset, h)
+    if u < -1e-9 or u > 1.0 + 1e-9:
+        return False
+    cross = (
+        offset[1] * edge1[2] - offset[2] * edge1[1],
+        offset[2] * edge1[0] - offset[0] * edge1[2],
+        offset[0] * edge1[1] - offset[1] * edge1[0],
+    )
+    v = inv_det * _dot(direction, cross)
+    if v < -1e-9 or u + v > 1.0 + 1e-9:
+        return False
+    t = inv_det * _dot(edge2, cross)
+    return -1e-9 <= t <= 1.0 + 1e-9
+
+
+def _triangle_distance_squared(first, second):
+    a, b, c = first
+    d, e, f = second
+    if any(_segment_intersects_triangle(p, q, d, e, f)
+           for p, q in ((a, b), (b, c), (c, a))):
+        return 0.0
+    if any(_segment_intersects_triangle(p, q, a, b, c)
+           for p, q in ((d, e), (e, f), (f, d))):
+        return 0.0
+    distances = [
+        *(_point_triangle_distance_squared(p, d, e, f) for p in first),
+        *(_point_triangle_distance_squared(p, a, b, c) for p in second),
+    ]
+    for p, q in ((a, b), (b, c), (c, a)):
+        for r, t in ((d, e), (e, f), (f, d)):
+            distances.append(_segment_segment_distance_squared(p, q, r, t))
+    return min(distances)
+
+
+def _triangulate_points(points):
+    """Fan-triangulate a planar polygon; opening faces are expected to be simple."""
+    points = [_point_tuple(p) if hasattr(p, "x") else tuple(p) for p in points]
+    return [(points[0], points[i], points[i + 1])
+            for i in range(1, len(points) - 1)] if len(points) >= 3 else []
+
+
+def _world_mesh_triangles(group):
+    from core.group import iter_placements
+
+    triangles = []
+    for placed, matrix in iter_placements(group):
+        for face in getattr(placed.mesh, "faces", ()):
+            points = [v.position for v in face.loop]
+            if matrix is not None:
+                points = [matrix.map(point) for point in points]
+            triangles.extend(_triangulate_points(points))
+    return triangles
+
+
+def _opening_to_building_distance(opening, building):
+    """Minimum surface distance from an opening polygon to a building mesh."""
+    opening_triangles = _triangulate_points(opening.get("vertices", ()))
+    building_triangles = _world_mesh_triangles(building)
+    if not opening_triangles or not building_triangles:
+        return None
+    best = float("inf")
+    for source_triangle in opening_triangles:
+        for building_triangle in building_triangles:
+            best = min(best, _triangle_distance_squared(
+                source_triangle, building_triangle))
+            if best <= 1e-12:
+                return 0.0
+    return best ** 0.5
+
+
+def top_level_buildings(scene, source_building_uid=None):
+    """Return other top-level scene groups as candidate neighbouring buildings."""
+    return [
+        group for group in (getattr(scene, "groups", None) or ())
+        if getattr(group, "uid", None)
+        and group.uid != source_building_uid
+    ]
+
+
+def find_nearby_buildings(scene, source_building_uid, opening,
+                          max_distance=15.0):
+    """Find every other top-level group within max_distance of one opening.
+
+    Distances are between the opening polygon and the actual placed building
+    surfaces, including nested group/component transforms.
+    """
+    matches = []
+    for building in top_level_buildings(scene, source_building_uid):
+        distance = _opening_to_building_distance(opening, building)
+        if distance is not None and distance <= max_distance + 1e-9:
+            matches.append({
+                "uid": building.uid,
+                "name": getattr(building, "name", "") or tr("Naamloos gebouw"),
+                "distance": distance,
+                "openings": _opening_faces_in_group_tree(building),
+            })
+    return sorted(matches, key=lambda item: item["distance"])
+
 def inspect_scene(scene):
     rows = []
     tagged_groups = 0
