@@ -2,6 +2,8 @@
 """Tests for material-based opening discovery in the NEN 6068 extension."""
 from __future__ import annotations
 
+import pytest
+
 from PySide6.QtGui import QMatrix4x4, QVector3D
 
 from core.group import Group
@@ -426,3 +428,49 @@ def test_reconstruct_building_footprint_reports_open_contour():
     assert not result["contours"]
     assert any("niet overal eenduidig gesloten" in error
                for error in result["errors"])
+
+
+
+def test_footprint_offset_moves_rectangle_edges_inward_by_wall_thickness():
+    contour = [(0, 0, 0), (4, 0, 0), (4, 3, 0), (0, 3, 0)]
+
+    result = offset_footprint_contour(contour, 0.35)
+
+    assert result["valid"]
+    assert result["area"] == pytest.approx((4 - 0.7) * (3 - 0.7))
+    assert result["contour"] == pytest.approx([
+        (0.35, 0.35, 0), (3.65, 0.35, 0),
+        (3.65, 2.65, 0), (0.35, 2.65, 0),
+    ])
+
+
+def test_footprint_offset_is_independent_of_contour_winding():
+    contour = [(0, 0, 0), (0, 3, 0), (4, 3, 0), (4, 0, 0)]
+
+    result = offset_footprint_contour(contour, 0.35)
+
+    assert result["valid"]
+    assert result["area"] == pytest.approx(2.3 * 3.3)
+
+
+def test_footprint_offset_handles_concave_polygon():
+    contour = [
+        (0, 0, 0), (4, 0, 0), (4, 1, 0),
+        (1, 1, 0), (1, 4, 0), (0, 4, 0),
+    ]
+
+    result = offset_footprint_contour(contour, 0.2)
+
+    assert result["valid"]
+    assert len(result["contour"]) == 6
+    assert result["area"] < 7.0
+
+
+def test_footprint_offset_rejects_collapsed_narrow_building():
+    contour = [(0, 0, 0), (0.5, 0, 0), (0.5, 3, 0), (0, 3, 0)]
+
+    result = offset_footprint_contour(contour, 0.35)
+
+    assert not result["valid"]
+    assert not result["contour"]
+    assert any("ingestort" in error for error in result["errors"])
