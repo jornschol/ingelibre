@@ -389,71 +389,57 @@ def inspect_scene(scene):
     }
 
 
+def building_selection_choices(scene):
+    """Only top-level scene groups represent buildings in this workflow."""
+    return group_selection_choices(getattr(scene, "groups", None))
+
+
+def analyse_source_building(scene, source_building_uid, max_distance=15.0):
+    """Return every marked source opening and its nearby top-level buildings."""
+    openings = find_openings_in_building(scene, source_building_uid)
+    return [{
+        "opening": opening,
+        "nearby_buildings": find_nearby_buildings(
+            scene, source_building_uid, opening, max_distance=max_distance
+        ),
+    } for opening in openings]
+
+
 def validate_selection(scene, selection):
     selection = selection if isinstance(selection, dict) else {}
-    groups = list(_walk_groups(getattr(scene, "groups", None)))
-    by_uid = {g.uid: g for g in groups if getattr(g, "uid", None)}
+    source_uid = selection.get("source_building")
+    source = next((group for group in (getattr(scene, "groups", None) or ())
+                   if getattr(group, "uid", None) == source_uid), None)
     errors, warnings, resolved = [], [], {}
-    for key, label in (
-        ("source_building", "brongebouw"),
-        ("receiving_building", "ontvangend gebouw"),
-    ):
-        group = by_uid.get(selection.get(key))
-        if group is None:
-            errors.append(f"Geen geldig {label} geselecteerd.")
-        else:
-            resolved[key] = group
+    if source is None:
+        errors.append("Geen geldig brongebouw geselecteerd.")
+        analysis = []
+    else:
+        resolved["source_building"] = source
+        # Temporary modelling assumption: the complete source building is
+        # the fire compartment. Keep this alias for future calculation code.
+        resolved["fire_compartment"] = source
+        analysis = analyse_source_building(scene, source_uid)
 
-    # Temporary modelling assumption: the complete source building is the
-    # fire compartment. Keep the resolved alias for downstream code and
-    # compatibility, but do not ask the user to select it separately.
-    resolved["fire_compartment"] = resolved.get("source_building")
-
-    for key, label in (("source_facade", "brongevel"),
-                       ("receiving_facade", "ontvangende gevel")):
-        ref = selection.get(key)
-        facade = resolve_facade_selection(scene, ref) if ref else None
-        if facade is None:
-            errors.append(f"Geen geldige {label} geselecteerd.")
-        else:
-            resolved[key] = facade
-
-    source = selection.get("source_building")
-    receiving = selection.get("receiving_building")
-    if source and source == receiving:
-        errors.append("Brongebouw en ontvangend gebouw zijn hetzelfde object.")
-
-    source_openings = find_openings_in_building(scene, source)
-    if not source_openings:
+    if source is not None and not analysis:
         warnings.append(
             f"Geen vlakken met materiaal '{OPENING_MATERIAL}' gevonden in het brongebouw."
         )
 
-    receiving_refs = selection.get("receiving_openings", []) or []
-    if not isinstance(receiving_refs, list):
-        errors.append("De selectie van ontvangende gevelopeningen is ongeldig.")
-        receiving_refs = []
-    if len(receiving_refs) != len(set(receiving_refs)):
-        errors.append("Een ontvangende gevelopening is dubbel geselecteerd.")
-    for ref in receiving_refs:
-        resolved_face = resolve_opening_reference(scene, ref)
-        if resolved_face is None:
-            errors.append("Een geselecteerde ontvangende gevelopening bestaat niet meer of heeft niet langer het materiaal 'gevelopening'.")
-            continue
-        if receiving and not any(item["ref"] == ref
-                                 for item in find_openings_in_building(scene, receiving)):
-            warnings.append("Een geselecteerde ontvangende gevelopening valt niet aantoonbaar binnen het gekozen ontvangende gebouw.")
+    nearby_count = sum(len(item["nearby_buildings"]) for item in analysis)
+    if analysis and not nearby_count:
+        warnings.append(
+            "Geen andere top-level gebouwen binnen 15 meter van de bronopeningen gevonden."
+        )
 
-    if not receiving_refs:
-        warnings.append("Selecteer één of meer ontvangende gevelopeningen.")
-    warnings.append(
-        "De materiaalmarkering identificeert modelvlakken, maar bewijst op zichzelf "
-        "nog niet dat elk vlak een volgens NEN 6068 relevante opening is of binnen "
-        "het gekozen brandcompartiment/gevelvlak ligt."
-    )
     return {
-        "errors": errors, "warnings": warnings, "valid": not errors,
-        "resolved": resolved, "source_openings": source_openings,
+        "errors": errors,
+        "warnings": warnings,
+        "valid": not errors,
+        "resolved": resolved,
+        "source_openings": [item["opening"] for item in analysis],
+        "opening_analysis": analysis,
+        "nearby_building_count": nearby_count,
     }
 
 
@@ -465,6 +451,7 @@ class BrandoverslagPanel(QWidget):
         heading = QLabel(tr("NEN 6068 — Brandoverslag"))
         heading.setStyleSheet("font-weight: 600; font-size: 15px;")
         layout.addWidget(heading)
+
         self.status = QLabel()
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
@@ -472,33 +459,17 @@ class BrandoverslagPanel(QWidget):
         self.model_summary.setWordWrap(True)
         layout.addWidget(self.model_summary)
 
-        selection_heading = QLabel(tr("Modelonderdelen voor de berekening"))
-        selection_heading.setStyleSheet("font-weight: 600;")
-        layout.addWidget(selection_heading)
         selection_form = QFormLayout()
-        self._selection_combos = {}
-        for key, label in (
-            ("source_building", tr("Brongebouw")),
-            ("receiving_building", tr("Ontvangend gebouw")),
-            ("source_facade", tr("Brongevel")),
-            ("receiving_facade", tr("Ontvangende gevel")),
-        ):
-            combo = QComboBox()
-            combo.addItem(tr("— niet geselecteerd —"), None)
-            combo.currentIndexChanged.connect(self._save_selection)
-            self._selection_combos[key] = combo
-            selection_form.addRow(label, combo)
+        self.source_building = QComboBox()
+        self.source_building.addItem(tr("— selecteer brongebouw —"), None)
+        self.source_building.currentIndexChanged.connect(self._save_selection)
+        selection_form.addRow(tr("Brongebouw / brandcompartiment"), self.source_building)
         layout.addLayout(selection_form)
 
         self.source_openings = QListWidget()
-        self.source_openings.setMaximumHeight(115)
         self.source_openings.setSelectionMode(QAbstractItemView.NoSelection)
-        selection_form.addRow(tr("Automatisch gevonden bronopeningen"), self.source_openings)
-
-        self.receiving_openings = QListWidget()
-        self.receiving_openings.setMaximumHeight(145)
-        self.receiving_openings.itemChanged.connect(self._save_receiving_selection)
-        selection_form.addRow(tr("Te beoordelen ontvangende openingen"), self.receiving_openings)
+        layout.addWidget(QLabel(tr("Bronopeningen en nabijgelegen gebouwen")))
+        layout.addWidget(self.source_openings, 1)
 
         self.selection_status = QLabel()
         self.selection_status.setWordWrap(True)
@@ -524,11 +495,11 @@ class BrandoverslagPanel(QWidget):
         self.refresh_button.clicked.connect(self.refresh)
         layout.addWidget(self.refresh_button)
         self.scope = QLabel(
-            tr("Ken het materiaal 'gevelopening' toe aan elk rechthoekig vlak "
-               "dat als opening moet worden herkend. Bronopeningen worden "
-               "automatisch uit het brongebouw verzameld; ontvangende openingen "
-               "selecteer je handmatig. Windowizer is niet nodig. Er worden nog "
-               "geen NEN 6068-resultaten berekend.")
+            tr("Selecteer één top-level groep als brongebouw. Geneste groepen en "
+               "componenten horen bij dat gebouw. Vlakken met materiaal "
+               "'gevelopening' worden per opening onderzocht op andere top-level "
+               "gebouwen binnen 15 meter. Dit is alleen geometrische detectie; "
+               "er worden nog geen NEN 6068-berekeningen of vlamvisualisaties gemaakt.")
         )
         self.scope.setWordWrap(True)
         self.scope.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -538,52 +509,37 @@ class BrandoverslagPanel(QWidget):
     def _refresh_selection_choices(self):
         state = self.app.document_data({}) or {}
         selected = state.get("selection", {})
-        groups = list(_walk_groups(getattr(self.app.scene, "groups", None)))
-        choices = group_selection_choices(groups)
-        facade_choices = facade_selection_choices(self.app.scene)
-        for key, combo in self._selection_combos.items():
-            combo.blockSignals(True)
-            current = selected.get(key)
-            combo.clear()
-            combo.addItem(tr("— niet geselecteerd —"), None)
-            role_choices = facade_choices if key in ("source_facade", "receiving_facade") else choices
-            for label, uid in role_choices:
-                combo.addItem(label, uid)
-            index = combo.findData(current)
-            combo.setCurrentIndex(index if index >= 0 else 0)
-            combo.blockSignals(False)
+        self.source_building.blockSignals(True)
+        self.source_building.clear()
+        self.source_building.addItem(tr("— selecteer brongebouw —"), None)
+        for label, uid in building_selection_choices(self.app.scene):
+            self.source_building.addItem(label, uid)
+        index = self.source_building.findData(selected.get("source_building"))
+        self.source_building.setCurrentIndex(index if index >= 0 else 0)
+        self.source_building.blockSignals(False)
 
         report = validate_selection(self.app.scene, selected)
-        self.source_openings.blockSignals(True)
         self.source_openings.clear()
-        for opening in report["source_openings"]:
-            item = QListWidgetItem(opening["name"])
-            item.setToolTip(opening["ref"])
-            self.source_openings.addItem(item)
-        self.source_openings.blockSignals(False)
+        for item in report["opening_analysis"]:
+            opening = item["opening"]
+            nearby = item["nearby_buildings"]
+            if not nearby:
+                summary = tr("Geen ander gebouw binnen 15 m")
+            else:
+                summary = "; ".join(
+                    tr("{name}: {distance:.2f} m · {openings} gemarkeerde opening(en)",
+                       name=building["name"], distance=building["distance"],
+                       openings=len(building["openings"]))
+                    for building in nearby
+                )
+            row = QListWidgetItem(f'{opening["name"]} — {summary}')
+            row.setToolTip(opening["ref"])
+            self.source_openings.addItem(row)
 
-        receiving_building = selected.get("receiving_building")
-        receiving_candidates = find_openings_in_building(self.app.scene, receiving_building)
-        self.receiving_openings.blockSignals(True)
-        self.receiving_openings.clear()
-        checked = set(selected.get("receiving_openings", []) or [])
-        for opening in receiving_candidates:
-            item = QListWidgetItem(opening["name"])
-            item.setData(Qt.ItemDataRole.UserRole, opening["ref"])
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Checked if opening["ref"] in checked
-                               else Qt.CheckState.Unchecked)
-            self.receiving_openings.addItem(item)
-        self.receiving_openings.blockSignals(False)
-
-        chosen = sum(1 for combo in self._selection_combos.values()
-                     if combo.currentData())
         self.selection_status.setText(
-            tr("{chosen} van de {total} rollen gekoppeld · {source} bronopeningen "
-               "gevonden · {receiving} ontvangende openingen beschikbaar.",
-               chosen=chosen, total=len(self._selection_combos),
-               source=len(report["source_openings"]),
-               receiving=len(receiving_candidates))
+            tr("{openings} bronopeningen onderzocht · {nearby} gebouw/opening-nabijheidsrelaties gevonden.",
+               openings=len(report["source_openings"]),
+               nearby=report["nearby_building_count"])
         )
         self._update_validation(selected)
 
@@ -592,7 +548,7 @@ class BrandoverslagPanel(QWidget):
             self.app.document_data({}) or {}).get("selection", {})
         report = validate_selection(self.app.scene, selection)
         messages = (["Fouten:"] + ["• " + x for x in report["errors"]]
-                    if report["errors"] else ["Geen ontbrekende of tegenstrijdige rolkoppelingen."])
+                    if report["errors"] else ["Brongebouwselectie is geldig."])
         if report["warnings"]:
             messages += ["Aandachtspunten:"] + ["• " + x for x in report["warnings"]]
         self.validation_status.setText("\n".join(messages))
@@ -600,28 +556,10 @@ class BrandoverslagPanel(QWidget):
     def _save_selection(self, _index=None):
         state = self.app.document_data({}) or {}
         selection = state.get("selection", {})
-        selection.update({key: combo.currentData()
-                          for key, combo in self._selection_combos.items()})
-        # Drop receiving references no longer present in the chosen building.
-        valid = {x["ref"] for x in find_openings_in_building(
-            self.app.scene, selection.get("receiving_building"))}
-        selection["receiving_openings"] = [
-            ref for ref in selection.get("receiving_openings", []) if ref in valid]
+        selection["source_building"] = self.source_building.currentData()
         state["selection"] = selection
         self.app.set_document_data(state)
         self._refresh_selection_choices()
-
-    def _save_receiving_selection(self, _item=None):
-        state = self.app.document_data({}) or {}
-        selection = state.get("selection", {})
-        selection["receiving_openings"] = [
-            self.receiving_openings.item(i).data(Qt.ItemDataRole.UserRole)
-            for i in range(self.receiving_openings.count())
-            if self.receiving_openings.item(i).checkState() == Qt.CheckState.Checked
-        ]
-        state["selection"] = selection
-        self.app.set_document_data(state)
-        self._update_validation(selection)
 
     def refresh(self):
         try:
@@ -629,9 +567,10 @@ class BrandoverslagPanel(QWidget):
             self._refresh_selection_choices()
             self.status.setText(tr("Modelkoppeling actief."))
             self.model_summary.setText(
-                tr("Groepen: {groups} · BIM-geclassificeerde groepen: {tagged} · "
+                tr("Top-level gebouwen: {groups} · BIM-geclassificeerde groepen: {tagged} · "
                    "Losse vlakken: {faces} · Gemarkeerde gevelopeningen: {openings}",
-                   groups=inventory["group_count"], tagged=inventory["tagged_groups"],
+                   groups=len(getattr(self.app.scene, "groups", ()) or ()),
+                   tagged=inventory["tagged_groups"],
                    faces=inventory["loose_faces"], openings=inventory["opening_count"])
             )
             self.inventory.setRowCount(len(inventory["rows"]))
