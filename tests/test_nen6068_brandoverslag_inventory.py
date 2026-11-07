@@ -17,6 +17,7 @@ from plugins.nen6068_brandoverslag import (
     resolve_opening_reference,
     validate_selection,
     _opening_to_building_distance,
+    analyse_building_floors,
 )
 
 
@@ -259,3 +260,44 @@ def test_building_distance_respects_hole_in_face():
     )
 
     assert abs(distance - 0.5) < 1e-5
+
+
+def test_building_floor_detection_finds_ground_face_in_building_mesh_and_floor_group():
+    building = Group(name="Woning")
+    ground = _plane_mesh(0.0)
+    building.mesh = ground
+    first_floor = Group(_plane_mesh(2.0), "floor")
+    building.adopt([first_floor])
+
+    result = analyse_building_floors(building)
+
+    assert result["ground_floor_valid"]
+    assert result["ground_floor_face_count"] == 1
+    assert abs(result["ground_floor_area"] - 1.2) < 1e-6
+    assert result["first_floor_face_count"] == 1
+    assert abs(result["first_floor_area"] - 1.2) < 1e-6
+    assert result["first_floor_heights"] == [2.0]
+
+
+def test_building_floor_detection_finds_ground_face_in_nested_group():
+    building = Group(name="Woning")
+    ground_group = Group(_plane_mesh(0.0), "Begane grond")
+    building.adopt([ground_group])
+
+    result = analyse_building_floors(building)
+
+    assert result["ground_floor_valid"]
+    assert result["ground_floor_face_count"] == 1
+    assert abs(result["ground_floor_area"] - 1.2) < 1e-6
+
+
+def test_building_floor_detection_reports_ambiguous_ground_faces():
+    building = Group(name="Woning")
+    building.mesh = _plane_mesh(0.0)
+    extra_ground = Group(_plane_mesh(0.0), "Extra vlak")
+    building.adopt([extra_ground])
+
+    result = analyse_building_floors(building)
+
+    assert not result["ground_floor_valid"]
+    assert result["ground_floor_face_count"] == 2
