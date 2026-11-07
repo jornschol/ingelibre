@@ -8,10 +8,11 @@ geometry only; it does not perform a NEN 6068 calculation.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QFormLayout, QHeaderView, QLabel,
     QListWidget, QListWidgetItem, QPushButton, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget, QDoubleSpinBox,
+    QTableWidgetItem, QVBoxLayout, QWidget, QDoubleSpinBox, QCheckBox,
 )
 
 from core.i18n import tr
@@ -955,6 +956,13 @@ class BrandoverslagPanel(QWidget):
         self.floor_summary.setWordWrap(True)
         layout.addWidget(self.floor_summary)
 
+        self.show_footprint = QCheckBox(tr("Toon buiten- en binnencontour in 3D"))
+        self.show_footprint.setChecked(True)
+        self.show_footprint.toggled.connect(self.app.viewport.update)
+        layout.addWidget(self.show_footprint)
+        self._footprint_overlay = None
+        self.app.add_overlay(self._draw_footprint_overlay)
+
         selection_form = QFormLayout()
         self.source_building = QComboBox()
         self.source_building.addItem(tr("— selecteer brongebouw —"), None)
@@ -1042,6 +1050,10 @@ class BrandoverslagPanel(QWidget):
             walls = analyse_building_walls(source)
             footprint = reconstruct_building_footprint(
                 source, wall_thickness=float(self.wall_thickness.value()))
+            self._footprint_overlay = {
+                "outer": footprint["contours"] if footprint["valid"] else [],
+                "inner": footprint["inner_contours"] if footprint["inner_valid"] else [],
+            }
             ground_status = (
                 tr("begane grond: {area:.2f} m²", area=floors["ground_floor_area"])
                 if floors["ground_floor_valid"] else
@@ -1104,6 +1116,28 @@ class BrandoverslagPanel(QWidget):
                nearby=report["nearby_building_count"])
         )
         self._update_validation(selected)
+
+    def _draw_footprint_overlay(self, viewport, painter):
+        """Draw validated footprint contours over the 3D viewport."""
+        if not self.show_footprint.isChecked() or not self._footprint_overlay:
+            return
+        contours = self._footprint_overlay
+        for key, color, width, style in (
+            ("outer", QColor(110, 170, 220, 220), 1.5, Qt.DashLine),
+            ("inner", QColor(243, 115, 41, 255), 2.5, Qt.SolidLine),
+        ):
+            painter.setPen(QPen(color, width, style))
+            for contour in contours[key]:
+                if len(contour) < 3:
+                    continue
+                px, py, in_front = viewport.world_to_pixels(contour)
+                if not all(bool(value) for value in in_front):
+                    continue
+                polygon = QPolygonF()
+                for x, y in zip(px, py):
+                    from PySide6.QtCore import QPointF
+                    polygon.append(QPointF(float(x), float(y)))
+                painter.drawPolygon(polygon)
 
     def _update_validation(self, selection=None):
         selection = selection if selection is not None else (
