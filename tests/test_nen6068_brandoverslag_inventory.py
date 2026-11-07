@@ -20,6 +20,7 @@ from plugins.nen6068_brandoverslag import (
     analyse_building_floors,
     analyse_building_roof,
     analyse_building_walls,
+    reconstruct_building_footprint,
 )
 
 
@@ -387,3 +388,41 @@ def test_building_floor_detection_reports_ambiguous_ground_faces():
 
     assert not result["ground_floor_valid"]
     assert result["ground_floor_face_count"] == 2
+
+
+def _wall_group(points, name="Wall"):
+    return Group(_oriented_plane_mesh(points), name)
+
+
+def test_reconstruct_building_footprint_from_four_connecting_wall_bases():
+    building = Group(name="Woning")
+    building.adopt([
+        _wall_group([(0, 0, 0), (4, 0, 0), (4, 0, 3), (0, 0, 3)], "Voorgevel"),
+        _wall_group([(4, 0, 0), (4, 3, 0), (4, 3, 3), (4, 0, 3)], "Rechtergevel"),
+        _wall_group([(4, 3, 0), (0, 3, 0), (0, 3, 3), (4, 3, 3)], "Achtergevel"),
+        _wall_group([(0, 3, 0), (0, 0, 0), (0, 0, 3), (0, 3, 3)], "Linkergevel"),
+    ])
+
+    result = reconstruct_building_footprint(building)
+
+    assert result["valid"]
+    assert len(result["contours"]) == 1
+    assert len(result["contours"][0]) == 4
+    assert result["edge_count"] == 4
+    assert result["vertex_count"] == 4
+
+
+def test_reconstruct_building_footprint_reports_open_contour():
+    building = Group(name="Onvolledige woning")
+    building.adopt([
+        _wall_group([(0, 0, 0), (4, 0, 0), (4, 0, 3), (0, 0, 3)]),
+        _wall_group([(4, 0, 0), (4, 3, 0), (4, 3, 3), (4, 0, 3)]),
+        _wall_group([(4, 3, 0), (0, 3, 0), (0, 3, 3), (4, 3, 3)]),
+    ])
+
+    result = reconstruct_building_footprint(building)
+
+    assert not result["valid"]
+    assert not result["contours"]
+    assert any("niet overal eenduidig gesloten" in error
+               for error in result["errors"])
