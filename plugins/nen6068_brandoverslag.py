@@ -460,6 +460,62 @@ def analyse_building_floors(building, ground_height=0.0,
     }
 
 
+def _face_world_normal(face, matrix=None):
+    """Return a unit normal from the face's ordered boundary in world space."""
+    points = list(getattr(face, "vertices", ()))
+    if len(points) < 3:
+        return None
+    if matrix is not None:
+        points = [matrix.map(point) for point in points]
+    origin = _point_tuple(points[0])
+    normal = None
+    for index in range(1, len(points) - 1):
+        first = _sub(_point_tuple(points[index]), origin)
+        second = _sub(_point_tuple(points[index + 1]), origin)
+        cross = (
+            first[1] * second[2] - first[2] * second[1],
+            first[2] * second[0] - first[0] * second[2],
+            first[0] * second[1] - first[1] * second[0],
+        )
+        length = _dot(cross, cross) ** 0.5
+        if length > 1e-10:
+            normal = tuple(value / length for value in cross)
+            break
+    return normal
+
+
+def analyse_building_roof(building, upward_tolerance=1e-6):
+    """Find outward-facing roof planes by their upward world-space normal.
+
+    Roof faces are individual planes, not closed solids. Their front side must
+    point outward and have a positive world Z normal component. Vertical wall
+    faces (Z ~= 0) and downward-facing planes are excluded.
+    """
+    from core.group import iter_placements
+
+    roof_faces = []
+    for placed, matrix in iter_placements(building):
+        for index, face in enumerate(getattr(placed.mesh, "faces", ())):
+            normal = _face_world_normal(face, matrix)
+            if normal is None or normal[2] <= upward_tolerance:
+                continue
+            roof_faces.append({
+                "group": placed,
+                "face_index": index,
+                "normal": normal,
+                "area": _face_area(face, matrix),
+                "vertices": [
+                    matrix.map(point) if matrix is not None else type(point)(point)
+                    for point in face.vertices
+                ],
+            })
+    return {
+        "roof_faces": roof_faces,
+        "roof_face_count": len(roof_faces),
+        "roof_area": sum(item["area"] for item in roof_faces),
+    }
+
+
 def inspect_scene(scene):
     rows = []
     tagged_groups = 0
