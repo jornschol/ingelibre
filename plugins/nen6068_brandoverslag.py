@@ -579,6 +579,37 @@ def _wall_base_segments(wall_faces, height_tolerance=WALL_BASE_TOLERANCE):
     return segments
 
 
+def _ground_level_opening_segments(building, ground_height=0.0,
+                                   height_tolerance=WALL_BASE_TOLERANCE):
+    """Return ground-level bottom edges of marked vertical opening faces.
+
+    A door that reaches the ground is not a wall face, but its lower edge
+    still closes the exterior footprint between the adjacent wall sections.
+    """
+    from core.group import iter_placements
+
+    segments = []
+    for placed, matrix in iter_placements(building):
+        for face in getattr(placed.mesh, "faces", ()):
+            attrs = getattr(face, "attrs", None) or {}
+            if attrs.get("mat") != OPENING_MATERIAL:
+                continue
+            normal = _face_world_normal(face, matrix)
+            if normal is None or abs(normal[2]) > WALL_NORMAL_Z_TOLERANCE:
+                continue
+            vertices = [
+                _point_tuple(matrix.map(point) if matrix is not None else point)
+                for point in face.vertices
+            ]
+            for index, first in enumerate(vertices):
+                second = vertices[(index + 1) % len(vertices)]
+                if (abs(first[2] - ground_height) <= height_tolerance
+                        and abs(second[2] - ground_height) <= height_tolerance
+                        and _distance_squared(first, second) > 1e-12):
+                    segments.append((first, second))
+    return segments
+
+
 def _polygon_signed_area_xy(points):
     return 0.5 * sum(
         points[index][0] * points[(index + 1) % len(points)][1]
@@ -716,6 +747,9 @@ def reconstruct_building_footprint(building, vertex_tolerance=WALL_VERTEX_TOLERA
     """Reconstruct the exterior footprint and its inward wall-thickness offset."""
     walls = analyse_building_walls(building)
     segments = _wall_base_segments(walls["wall_faces"], height_tolerance)
+    segments.extend(_ground_level_opening_segments(
+        building, ground_height=0.0, height_tolerance=height_tolerance
+    ))
     if not segments:
         return {
             "contours": [], "inner_contours": [], "segments": [], "valid": False,
