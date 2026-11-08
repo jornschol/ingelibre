@@ -366,6 +366,30 @@ def test_wall_detection_includes_outward_vertical_planes_only():
     assert all(abs(item["normal"][2]) <= 0.1 for item in result["wall_faces"])
 
 
+def test_ground_level_door_closes_footprint_without_becoming_a_wall():
+    building = Group(name="Woning")
+    door = _wall_group([
+        (1, 0, 0), (2, 0, 0), (2, 0, 2), (1, 0, 2),
+    ], "Voordeur")
+    door.mesh.faces[0].attrs["mat"] = OPENING_MATERIAL
+    building.adopt([
+        _wall_group([(0, 0, 0), (1, 0, 0), (1, 0, 3), (0, 0, 3)], "Voorgevel links"),
+        _wall_group([(2, 0, 0), (4, 0, 0), (4, 0, 3), (2, 0, 3)], "Voorgevel rechts"),
+        _wall_group([(4, 0, 0), (4, 3, 0), (4, 3, 3), (4, 0, 3)], "Rechtergevel"),
+        _wall_group([(4, 3, 0), (0, 3, 0), (0, 3, 3), (4, 3, 3)], "Achtergevel"),
+        _wall_group([(0, 3, 0), (0, 0, 0), (0, 0, 3), (0, 3, 3)], "Linkergevel"),
+        door,
+    ])
+
+    walls = analyse_building_walls(building)
+    footprint = reconstruct_building_footprint(building)
+
+    assert walls["wall_face_count"] == 5
+    assert footprint["valid"]
+    assert len(footprint["contours"]) == 1
+    assert len(footprint["contours"][0]) == 6
+
+
 def test_marked_opening_face_is_not_included_in_walls_or_footprint():
     building = Group(name="Woning")
     front = _wall_group([
