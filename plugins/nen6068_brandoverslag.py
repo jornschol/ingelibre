@@ -534,6 +534,12 @@ def analyse_building_walls(building, normal_z_tolerance=WALL_NORMAL_Z_TOLERANCE)
     wall_faces = []
     for placed, matrix in iter_placements(building):
         for index, face in enumerate(getattr(placed.mesh, "faces", ())):
+            # Marked opening faces are separate geometry, not exterior wall
+            # surfaces. Keep them in opening discovery, but exclude them from
+            # wall-area and footprint reconstruction.
+            attrs = getattr(face, "attrs", None) or {}
+            if attrs.get("mat") == OPENING_MATERIAL:
+                continue
             normal = _face_world_normal(face, matrix)
             if normal is None or abs(normal[2]) > normal_z_tolerance:
                 continue
