@@ -366,6 +366,33 @@ def test_wall_detection_includes_outward_vertical_planes_only():
     assert all(abs(item["normal"][2]) <= 0.1 for item in result["wall_faces"])
 
 
+def test_marked_opening_face_is_not_included_in_walls_or_footprint():
+    building = Group(name="Woning")
+    front = _wall_group([
+        (0, 0, 0), (4, 0, 0), (4, 0, 3), (0, 0, 3),
+    ], "Voorgevel")
+    opening = _wall_group([
+        (1, 0, 1), (2, 0, 1), (2, 0, 2), (1, 0, 2),
+    ], "Kozijn")
+    opening.mesh.faces[0].attrs["mat"] = OPENING_MATERIAL
+    building.adopt([
+        front,
+        _wall_group([(4, 0, 0), (4, 3, 0), (4, 3, 3), (4, 0, 3)], "Rechtergevel"),
+        _wall_group([(4, 3, 0), (0, 3, 0), (0, 3, 3), (4, 3, 3)], "Achtergevel"),
+        _wall_group([(0, 3, 0), (0, 0, 0), (0, 0, 3), (0, 3, 3)], "Linkergevel"),
+        opening,
+    ])
+
+    walls = analyse_building_walls(building)
+    footprint = reconstruct_building_footprint(building)
+    scene = Scene()
+    scene.groups.append(building)
+
+    assert walls["wall_face_count"] == 4
+    assert footprint["valid"]
+    assert len(find_openings_in_building(scene, building.uid)) == 1
+
+
 def test_wall_detection_uses_world_space_orientation_for_nested_faces():
     building = Group(name="Woning")
     wall = Group(_oriented_plane_mesh([
